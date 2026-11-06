@@ -108,7 +108,8 @@ extern "C" {
 uint64_t get_monotonic_ms(void);
 void mark_remote_slot_active(uint8_t slot);
 bool is_ota_busy(void);
-void http_post_local(int port, const char *endpoint, const char *json_body);
+/* POST json_body to 127.0.0.1:port; returns the HTTP status, -1 when nothing came back */
+int http_post_local(int port, const char *endpoint, const char *json_body);
 
 /* /data/harmony/elite_slot<N>_version.json: the remote's software version, config version,
  * capabilities and unit id, read back at start. Written only when something changed. */

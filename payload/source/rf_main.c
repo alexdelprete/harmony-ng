@@ -521,17 +521,31 @@ int main(int argc, char **argv) {
      * charging, link state, pairing, model, version, config sync, OTA state). The daemon turns
      * it into an rf_status event; the link counters and the battery voltage are not changes. */
     char *last_key = NULL;
+    int push_failing = 0;
     while (g_running) {
         sleep(1);
         char key[3584];
         if (rf_build_status_json(key, sizeof(key), RF_STATUS_STABLE_ONLY) < 0) continue;
         if (last_key && strcmp(last_key, key) == 0) continue;
+        char body[3584];
+        int blen = rf_build_status_json(body, sizeof(body), 0);
+        if (blen <= 0) continue;
+        char resp[128];
+        int st = http_request_local(DAEMON_PORT, "POST", "/api/rf/status-changed", body, resp, sizeof(resp), 400);
+        if (st != 200) {
+            /* Not delivered: keep last_key so the next second tries again, and say so once per
+             * streak (the daemon may be restarting) */
+            if (!push_failing) {
+                printf("[-] RF status push to hub_daemon failed (%s %d, %d bytes): %.80s\n",
+                       st < 0 ? "no answer," : "HTTP", st, blen, st < 0 ? "" : resp);
+            }
+            push_failing = 1;
+            continue;
+        }
+        if (push_failing) printf("[+] RF status push to hub_daemon works again\n");
+        push_failing = 0;
         free(last_key);
         last_key = strdup(key);
-        char body[3584];
-        if (rf_build_status_json(body, sizeof(body), 0) > 0) {
-            http_post_local(DAEMON_PORT, "/api/rf/status-changed", body);
-        }
     }
     free(last_key);
 
