@@ -240,6 +240,8 @@ int main(int argc, char **argv) {
         hub_events_dispatch();
         /* Snapshot for clients that upgraded since the last iteration */
         hub_ws_tick();
+        /* Keepalive pings and dead-client reaping */
+        ws_server_tick();
         mqtt_cmd_tick();
 
         /* Tick SNTP network time sync */

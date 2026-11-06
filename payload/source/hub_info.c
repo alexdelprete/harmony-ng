@@ -16,6 +16,7 @@ static const char *const k_capabilities[] = {
     "events",
     "snapshot",
     "ws_auth",
+    "ws_keepalive",
     "rf_wake",
     NULL
 };

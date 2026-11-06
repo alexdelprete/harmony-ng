@@ -1286,6 +1286,11 @@ refetch over REST. The frame can exceed 4 KB (outbound frames may be up to 64 KB
 }
 ```
 
+#### 10.15 Keepalive
+The server sends a WebSocket ping to a client that has sent nothing for 30 s; a client that
+answers nothing (pong or any other frame) within 10 s of the ping is closed. Client pings are
+still answered with pongs. Capability flag: `ws_keepalive`.
+
 ---
 
 ## 11. Authentication & Security Architecture

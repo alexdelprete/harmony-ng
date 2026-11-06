@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <errno.h>
 #include <pthread.h>
+#include <time.h>
 
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
@@ -17,6 +18,16 @@ static int g_client_roles[WS_MAX_CLIENTS];
 /* 1 until the main loop sent the client its snapshot: broadcasts skip it meanwhile, so the
  * snapshot is the first frame the client receives */
 static int g_client_pending[WS_MAX_CLIENTS];
+/* Keepalive state: monotonic seconds of the last frame from the client, and of the ping we
+ * sent and still wait to be answered (0 = none outstanding) */
+static time_t g_client_last_rx[WS_MAX_CLIENTS];
+static time_t g_client_ping_sent[WS_MAX_CLIENTS];
+
+static time_t mono_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec;
+}
 static size_t g_client_count = 0;
 /* Clients are added from HTTP worker threads, polled and removed by the main loop, and sent to
  * from the orchestrator, HTTP and state watcher threads: guard the list, and serialize frame
@@ -161,6 +172,8 @@ static int add_client(int fd) {
             g_clients[i] = fd;
             g_client_roles[i] = 2; /* admin until the upgrade records the token's role */
             g_client_pending[i] = 1;
+            g_client_last_rx[i] = mono_now();
+            g_client_ping_sent[i] = 0;
             g_client_count++;
             rc = 0;
             break;
@@ -327,12 +340,28 @@ int ws_take_pending_clients(int *out_fds, size_t max_count) {
     return (int)count;
 }
 
+/* Any frame from the client counts as traffic for the keepalive */
+static void note_client_rx(int client_fd) {
+    pthread_mutex_lock(&g_clients_lock);
+    for (size_t i = 0; i < WS_MAX_CLIENTS; i++) {
+        if (g_clients[i] == client_fd) {
+            g_client_last_rx[i] = mono_now();
+            g_client_ping_sent[i] = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_clients_lock);
+}
+
 int ws_read_frame(int client_fd, char *out_buf, size_t max_len, int *out_opcode) {
     if (client_fd < 0 || !out_buf || max_len == 0) return -1;
 
     uint8_t hdr[2];
     ssize_t n = recv(client_fd, hdr, 2, MSG_DONTWAIT);
-    if (n <= 0) return (int)n;
+    /* 0 bytes = the peer closed: report it as an error, so that an empty frame (a pong or a
+     * ping without payload, which returns 0) is not mistaken for a closed connection */
+    if (n <= 0) return -1;
+    note_client_rx(client_fd);
 
     uint8_t opcode = hdr[0] & 0x0F;
     if (out_opcode) *out_opcode = opcode;
@@ -405,6 +434,44 @@ int ws_get_clients(int *out_fds, size_t max_count) {
     }
     pthread_mutex_unlock(&g_clients_lock);
     return (int)count;
+}
+
+int ws_send_ping(int client_fd) {
+    if (client_fd < 0) return -1;
+    uint8_t frame[2] = {0x89, 0x00};
+    pthread_mutex_lock(&g_send_lock);
+    int rc = send_all(client_fd, frame, 2);
+    pthread_mutex_unlock(&g_send_lock);
+    return rc;
+}
+
+int ws_server_tick(void) {
+    time_t now = mono_now();
+    int to_ping[WS_MAX_CLIENTS], n_ping = 0;
+    int to_drop[WS_MAX_CLIENTS], n_drop = 0;
+    pthread_mutex_lock(&g_clients_lock);
+    for (size_t i = 0; i < WS_MAX_CLIENTS; i++) {
+        if (g_clients[i] < 0) continue;
+        if (g_client_ping_sent[i]) {
+            if (now - g_client_ping_sent[i] >= WS_PONG_TIMEOUT_S) to_drop[n_drop++] = g_clients[i];
+        } else if (now - g_client_last_rx[i] >= WS_PING_INTERVAL_S) {
+            g_client_ping_sent[i] = now;
+            to_ping[n_ping++] = g_clients[i];
+        }
+    }
+    pthread_mutex_unlock(&g_clients_lock);
+    int dropped = 0;
+    for (int i = 0; i < n_ping; i++) {
+        if (ws_send_ping(to_ping[i]) != 0) {
+            ws_remove_client(to_ping[i]);
+            dropped++;
+        }
+    }
+    for (int i = 0; i < n_drop; i++) {
+        ws_remove_client(to_drop[i]);
+        dropped++;
+    }
+    return dropped;
 }
 
 int ws_send_pong(int client_fd) {

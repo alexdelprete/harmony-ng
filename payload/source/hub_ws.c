@@ -147,7 +147,7 @@ void handle_ws_client_message(int cfd) {
     char buf[4096];
     int opcode = 0;
     int len = ws_read_frame(cfd, buf, sizeof(buf), &opcode);
-    if (len <= 0 || opcode == WS_OP_CLOSE) {
+    if (len < 0 || opcode == WS_OP_CLOSE) {
         ws_remove_client(cfd);  /* closes the socket (it used to be closed twice here) */
         return;
     }
@@ -157,7 +157,7 @@ void handle_ws_client_message(int cfd) {
         return;
     }
 
-    if (opcode != WS_OP_TEXT) return;
+    if (opcode != WS_OP_TEXT || len == 0) return; /* pongs and other control frames: traffic only */
 
     cJSON *root = cJSON_Parse(buf);
     if (!root) return;
