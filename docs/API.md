@@ -1136,6 +1136,52 @@ Connect via WebSocket to `ws://<hub_ip>:8089/ws` or `ws://<hub_ip>/ws`.
 }
 ```
 
+### Server-to-Client Messages (pushed events)
+
+Every state change the Hub knows about goes through its event bus and is pushed to every
+WebSocket client as one text frame. Each pushed message carries `type`, `seq` (sequence number,
+from 1 per daemon run, increasing across all types) and `ts` (Unix seconds). Nothing is replayed to
+a client that connects later: it fetches the current state over REST (or the `snapshot`, see
+10.10). A client that fails a send is dropped.
+
+#### 10.8 Activity State
+Sent on every change of the orchestrator state or of the current activity, including cancel and
+dry runs, and once at daemon start. Same shape as the `get_state` reply and `GET /api/activity`.
+```json
+{
+  "type": "activity_state",
+  "seq": 17,
+  "ts": 1762387200,
+  "activity": "123456",
+  "state": 2,
+  "stateName": "running",
+  "busy": false,
+  "sending": true
+}
+```
+- `state`: `0` idle, `1` starting, `2` running, `3` stopping; `stateName` is the same as a word.
+- `activity` is `"-1"` when idle; while starting it is still the previous activity.
+
+#### 10.9 Activity Progress
+One frame per executed step of an activity switch (unchanged shape, now carrying `seq` and `ts`).
+```json
+{
+  "type": "activity_progress",
+  "seq": 18,
+  "ts": 1762387200,
+  "activity": "123456",
+  "activityId": "123456",
+  "state": "starting",
+  "stateCode": 1,
+  "step": 2,
+  "currentStep": 2,
+  "total": 6,
+  "totalSteps": 6,
+  "desc": "TV PowerOn",
+  "stepDesc": "TV PowerOn"
+}
+```
+
 ---
 
 ## 11. Authentication & Security Architecture

@@ -85,6 +85,10 @@ gcc -Wall -O2 -I"$REPO_ROOT/payload/source" -I"$REPO_ROOT/payload/source/elite" 
 echo "[-] Launching Full Hub & Remote Co-Simulation..."
 python3 "$SCRIPT_DIR/test_co_simulation.py"
 
+# 5b. WebSocket event bus tests against hub_daemon_test on the mock root
+echo "[-] Running WebSocket event tests..."
+python3 "$SCRIPT_DIR/test_ws_events.py"
+
 # 6. Run OpenAPI Specification Contract Validation
 echo "[-] Running OpenAPI Specification Test Suite..."
 python3 "$SCRIPT_DIR/test_openapi.py" --host 127.0.0.1 --port 9999

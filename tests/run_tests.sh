@@ -210,6 +210,8 @@ fi
 
 if [ -f "$HOST_BUILD_DIR/hub_daemon_test" ]; then
     run_api_tests "$HOST_BUILD_DIR/hub_daemon_test"
+    echo "[-] Running WebSocket event tests..."
+    python3 "$SCRIPT_DIR/test_ws_events.py"
 else
     echo "[-] Validating cross-compiled binary headers and integrity..."
     file "$DAEMON_BIN" || true
