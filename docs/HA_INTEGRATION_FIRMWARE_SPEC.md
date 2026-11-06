@@ -564,7 +564,8 @@ the `select()` set, no thread).
 ## 5. Milestone 3, PR 3: MQTT rewrite on the bus
 
 Goal: the MQTT layer carries the same information as the WebSocket, publishes on change instead of on
-a timer, acknowledges commands, and no longer creates Home Assistant discovery entities. About 800
+a timer, acknowledges commands, and keeps the Home Assistant discovery entities, the first layer's
+inbound command topics and the MQTT-type device pulses on top of the new topics. About 800
 to 1200 lines, replacing most of `hub_mqtt.c` and all of `hub_mqtt_ha.c` (together about 1540 lines
 today), so the net size is flat or smaller.
 
@@ -642,29 +643,41 @@ Reply on `<base>/cmd/response`:
 Codes and errors equal the REST ones. A request without `id` is executed and not answered. Malformed
 JSON is answered with `code` 400 when an `id` can be recovered, otherwise logged.
 
-No old command topics survive: `<base>/activity/set`, `<base>/send_command`, `<base>/command`
-and `<base>/command/#`, `<base>/sync`, `<base>/remote/<n>/sleep`, `<base>/remote/sleep` and
-`harmony/ir/pronto` are no longer subscribed. `<base>/cmd` and `<base>/ir/raw` are the only
-inbound topics. Pronto over MQTT goes away; the REST endpoint keeps it.
+The inbound topics of the first layer stay subscribed as aliases, for existing automations and
+for the discovery buttons: `<base>/activity/set` (activity name, id, `PowerOff` or `-1`),
+`<base>/send_command` (the old JSON: `device` or `deviceId`, `command` or `commands`, `repeats`,
+`delay`, `hold`, `action`, run from a sequencer in `hub_mqtt_tick()`), `<base>/command/<dev>/<cmd>`,
+`<base>/sync` (republishes every retained topic and the discovery), `<base>/remote/<n>/sleep` and
+`<base>/remote/sleep`, and `harmony/ir/pronto`. They go through `hub_cmd_execute` or the device
+path and are never answered on `cmd/response`.
 
-### 5.4 Discovery removal
+### 5.4 Discovery kept, on the v2 topics
 
-`hub_mqtt_ha.c` is deleted. On the first start of the new firmware, if the previous version
-published discovery configs (detect through a marker file `/data/harmony/mqtt_discovery_done`, or
-simply always on first start after upgrade), publish an empty retained payload to every discovery
-topic the old code used (`<discovery_prefix>/<component>/<object_id>/config` for the sensors
-Activity, Activity ID, IP Address, Firmware, IR Devices, IR Commands, the buttons Power Off, Sync
-and the per-slot remote buttons) so Home Assistant removes the orphaned entities, then write the
-marker. The exact topic list is taken from `hub_mqtt_ha.c` before deletion and kept in a table in
-`hub_mqtt.c`.
+`hub_mqtt_ha.c` stays, rewritten for the v2 topics, with the object ids of the first layer so
+Home Assistant keeps the entities it already has. Settings `haDiscovery` (default true) and
+`discoveryPrefix` stay in `mqtt.json`, `POST /api/mqtt-save` and both web UIs. On every connect,
+on Home Assistant's birth message (`<discoveryPrefix>/status` = `online`), on `<base>/sync` and on
+`config_changed` the Hub publishes, retained, under `<discoveryPrefix>/<component>/<ident>_<object>/config`
+(`ident` = the client id lower-cased): select `Activity` (state `<base>/activity_state`, template
+mapping the activity id to its name, options `PowerOff` plus the names, command `<base>/activity/set`),
+sensors `Activity ID` (`activity_state.activity`), `IP Address`, `Firmware`, `IR Devices`,
+`IR Commands` (the `<base>/hub` object, which gains `ip`, `device_count` and `command_count`),
+buttons `Power Off` (`activity/set` = `PowerOff`), `Sync` (`<base>/sync`) and `Remote 1/2 Sleep`
+(`<base>/remote/<n>/sleep`). One device object (identifiers `ident` and `harmony-ng-<hub_id>`,
+name = the hub name, `configuration_url` = the web UI), availability on `<base>/status`. With
+`haDiscovery` off the same topics get an empty retained payload.
 
-The release note of the milestone 3 PR says the Home Assistant integration replaces the discovery entities and
-names the integration.
+On the first start of the new firmware the old state topics (`<base>/state`, `activity`,
+`current_activity`, `activity_id`, `activity/status`) get an empty retained payload once (marker
+`/data/harmony/mqtt_v2_migrated`); the discovery configs are not cleared, they are overwritten.
+
+The release note of the milestone 3 PR says the discovery entities now read the v2 topics and that
+the harmony-ng Home Assistant integration does not need them.
 
 ### 5.5 Settings and status
 
-`POST /api/mqtt-save` keeps `enabled`, `host`, `port`, `username`, `password`, `baseTopic` and
-`clientId`. The per-slot `slotNRemoteEvents` and `slotNRemoteTopic` fields are removed from the
+`POST /api/mqtt-save` keeps `enabled`, `host`, `port`, `username`, `password`, `baseTopic`,
+`clientId`, `discoveryPrefix` and `haDiscovery`. The per-slot `slotNRemoteEvents` and `slotNRemoteTopic` fields are removed from the
 endpoint, the settings file and both web UIs: button events are always published on
 `<base>/remote/<slot>/button`, no custom topics. `GET /api/mqtt-status` and the `mqtt` member of
 `/api/status` gain `"v2":true`.
@@ -672,10 +685,14 @@ endpoint, the settings file and both web UIs: button events are always published
 ### 5.6 Button events
 
 `<base>/remote/<slot>/button` replaces the pulse-then-zero scheme on `remotes/slotN/Cmd` and the
-device button pulse topics. Press and release are two messages, QoS 1, not retained. The device
-pulse topics (`<base>/button/device/<cmd>`, the per-device `mqttTopic` and `mqttPulse` fields, the
-`POST /api/button-press` MQTT dispatch and the `/api/device-mqtt-test` endpoint) are removed; the
-fields are ignored when present in `devices.json` and dropped from the web UI device editor.
+per-remote custom topics. Press and release are two messages, QoS 1, not retained.
+
+MQTT-type devices keep their pulse: a command to a device of type `MQTT` (or with `mqttEnabled`)
+publishes `"1"` on the device's `mqttTopic` template (default
+`{base_topic}/button/{device}/{command}`), then `"0"` after `mqttPulseMs` (default 1000), through
+the handler `hub_mqtt` registers with `hw_set_mqtt_button_handler()`, and raises the `button`
+event as well. `POST /api/device-save` stores the two fields, `POST /api/device-mqtt-test`
+publishes one pulse, both web UIs keep the device editor's topic and pulse controls.
 
 ### 5.7 Tests
 
@@ -684,12 +701,14 @@ fields are ignored when present in `devices.json` and dropped from the web UI de
   `activity` republished on a dry-run activity start; `inventory/index` and chunks match the sample
   config and change `inventory_version` when a device file is touched; a `cmd` request gets a
   `cmd_response` with the same `id`; a busy start gets 409; `ir/raw` reaches the recorded encoder
-  call; the discovery clear publishes empty payloads to the listed topics once.
+  call; the old state topics are cleared once; the discovery configs read the v2 topics and are
+  republished on the birth message and cleared when `haDiscovery` is turned off; the aliases start
+  and stop activities; a command to an MQTT device publishes its pulse.
 - `tests/test_mqtt_packets.c` if the chunking logic is non-trivial.
 - Hub verification: subscribe with `mosquitto_sub -v -t 'harmony/#'` from the devbox through the
-  owner's broker; drive an activity from the remote; confirm the old discovery entities disappear
-  from Home Assistant's MQTT integration after the upgrade; check `/proc/<pid>/status` is flat
-  after an hour.
+  owner's broker; drive an activity from the remote; confirm the discovery entities in Home
+  Assistant's MQTT integration follow the activity and the select starts one; check
+  `/proc/<pid>/status` is flat after an hour.
 
 ## 6. Milestone 4, PR 4: Logitech protocol shim, SSDP and toggle
 

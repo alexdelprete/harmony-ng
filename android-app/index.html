@@ -3428,8 +3428,18 @@
               <label for="mqttClientId" data-i18n="client_id">Client ID</label>
               <input id="mqttClientId" name="clientId" class="form-control" value="harmony_hub">
             </div>
-            <div></div>
+            <div>
+              <label for="mqttDiscoveryPrefix" data-i18n="discovery_prefix">Discovery Prefix</label>
+              <input id="mqttDiscoveryPrefix" name="discoveryPrefix" class="form-control" value="homeassistant">
+            </div>
           </div>
+          <div class="row" style="margin-top: 8px;">
+            <label style="display: flex; align-items: center; gap: 6px;">
+              <input type="checkbox" id="mqttHaDiscovery" name="haDiscovery" value="1" checked>
+              <span data-i18n="create_ha_entities_auto">Create Home Assistant entities automatically</span>
+            </label>
+          </div>
+          <div class="help" style="margin-top: 6px;">MQTT v2: retained state topics (hub, activity_state, bt, rf, config, inventory) and the cmd channel under the base topic; remote keys on &lt;base&gt;/remote/&lt;slot&gt;/button. The Home Assistant entities (activity select, sensors, buttons) use the MQTT integration's discovery; the harmony-ng integration does not need them.</div>
 
 
 

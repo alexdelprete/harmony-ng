@@ -487,9 +487,15 @@ Deletes a command by name from a device.
 - **Response `200 OK`**: `{"ok": true}`
 
 ### 3.8 Device MQTT Test
-Removed with MQTT v2 (8.1): `POST /api/device-mqtt-test` answers `404`. Devices of type MQTT keep
-their type, but the per-device `mqttTopic` and `mqttPulseMs` fields are ignored and no longer
-stored; a command sent to such a device becomes a `button` event (10.13) on the bus and on MQTT.
+Publishes the MQTT pulse of a device once, the way a command to an MQTT-type device does (8.1,
+"MQTT-type devices"): `"1"` on the resolved topic, then `"0"` after the pulse.
+
+#### `POST /api/device-mqtt-test`
+- **Request Body**: `{"deviceId": "3", "device": "Plug", "command": "PowerToggle", "topic": "{base_topic}/button/{device}/{command}", "pulseMs": 1000}`.
+  `topic` and `pulseMs` override the device's `mqttTopic` and `mqttPulseMs`; `command` defaults to
+  `PowerToggle`.
+- **Response `200 OK`**: `{"ok": true, "topic": "harmony/hub/button/Plug/PowerToggle", "pulseMs": 1000, "message": "MQTT test publish sent"}`.
+- **Response `503`**: MQTT is disabled or the broker is not connected.
 
 ---
 
@@ -989,10 +995,10 @@ Saves virtual remote keypad layout for WebUI and Android App.
 The MQTT layer carries the same information as the WebSocket (section 10): every state change is
 published on change, retained where it is state, never on a timer; commands are acknowledged.
 Capability flag `mqtt_v2`; `GET /api/mqtt-status` and the `mqtt` member of `/api/status` carry
-`"v2": true`. There are no Home Assistant discovery entities: the Home Assistant integration for
-harmony-ng replaces them (on the first start of this firmware the old discovery configs and the old
-state topics get an empty retained payload once, so brokers and Home Assistant drop them; marker
-`/data/harmony/mqtt_v2_migrated`).
+`"v2": true`. On the first start of this firmware the old state topics get an empty retained
+payload once, so brokers drop them (marker `/data/harmony/mqtt_v2_migrated`). The Home Assistant
+discovery entities, the inbound command topics of the first MQTT layer and the pulse of MQTT-type
+devices are kept (below).
 
 #### `POST /api/mqtt-save` or `POST /mqtt`
 - **Request Body** (every field optional; `password` is kept when absent or empty):
@@ -1004,13 +1010,16 @@ state topics get an empty retained payload once, so brokers and Home Assistant d
     "username": "homeassistant",
     "password": "password",
     "baseTopic": "harmony/hub",
-    "clientId": "harmony_hub"
+    "clientId": "harmony_hub",
+    "discoveryPrefix": "homeassistant",
+    "haDiscovery": true
   }
   ```
-  The fields of the old layer (`discoveryPrefix`, `haDiscovery`, `name`, `keepAlive`,
-  `btRemoteEvents`/`Topic`, `eliteRemoteEvents`/`Topic`, `slotNRemoteEvents`/`Topic`) are ignored
-  and removed from the stored file: button events are always published on
-  `<base>/remote/<slot>/button`.
+  `haDiscovery` (default true) publishes the Home Assistant discovery entities under
+  `discoveryPrefix`; turning it off clears them. The fields of the old layer with no v2 equivalent
+  (`name`, `keepAlive`, `btRemoteEvents`/`Topic`, `eliteRemoteEvents`/`Topic`,
+  `slotNRemoteEvents`/`Topic`) are ignored and removed from the stored file: button events are
+  always published on `<base>/remote/<slot>/button`.
 - **Response `200 OK`**: `{"ok": true, "message": "MQTT settings saved"}`; the client reconnects.
 
 #### `GET /api/mqtt-status`
@@ -1023,7 +1032,7 @@ state topics get an empty retained payload once, so brokers and Home Assistant d
 | Topic | Retained | QoS | Payload |
 | --- | --- | --- | --- |
 | `<base>/status` | yes | 1 | `online` / `offline` (last will) |
-| `<base>/hub` | yes | 1 | `{"type":"hub", ...}`: the `hub` object of the snapshot (10.14) |
+| `<base>/hub` | yes | 1 | `{"type":"hub", ...}`: the `hub` object of the snapshot (10.14) plus `ip`, `device_count` and `command_count` |
 | `<base>/activity_state` | yes | 1 | `activity_state` (10.8) |
 | `<base>/progress` | no | 0 | `activity_progress` (10.9) |
 | `<base>/bt` | yes | 1 | `bt_status` (10.11) |
@@ -1042,11 +1051,58 @@ retained payload, and the index is published last. Retained topics are republish
 (re)connect from the bus's last payloads. While the broker is down events are dropped (nothing is
 queued) and the retained state is resent on reconnect.
 
-The old topics `<base>/state`, `<base>/activity`, `<base>/current_activity`, `<base>/activity_id`,
-`<base>/activity/status`, the pulse topics (`<base>/button/device/<cmd>`, `remotes/slotN/Cmd`) and
-the old inbound topics (`<base>/activity/set`, `<base>/send_command`, `<base>/command`,
-`<base>/command/#`, `<base>/sync`, `<base>/remote/<n>/sleep`, `<base>/remote/sleep`,
-`harmony/ir/pronto`) are gone. Pronto over MQTT goes away; `POST /api/ir-send` keeps it.
+The old state topics `<base>/state`, `<base>/activity`, `<base>/current_activity`,
+`<base>/activity_id`, `<base>/activity/status` and the remote pulse topics (`remotes/slotN/Cmd`,
+the per-remote custom topics) are gone: read `activity_state`, `hub`, `inventory/index` and
+`remote/<slot>/button` instead.
+
+#### Inbound topics of the first MQTT layer (kept)
+These are aliases of the command channel for existing automations and for the discovery buttons:
+
+| Topic | Payload | Does |
+| --- | --- | --- |
+| `<base>/activity/set` | an activity name, an activity id, `PowerOff` or `-1` | `start_activity` / `stop_activity` |
+| `<base>/send_command` | `{"device": "<name>"` or `"deviceId": "<id>", "command": "<cmd>"` or `"commands": [...]`, optional `repeats`, `delay` (s) or `delay_ms`, `hold` (s) or `hold_ms`, `action`}` | the commands in order, `repeats` times, `delay` apart (0.25 s default for more than one) |
+| `<base>/command/<device>/<command>` | any | one command to the device (id or name) |
+| `<base>/sync` | any | republishes every retained topic and the discovery entities |
+| `<base>/remote/<n>/sleep`, `<base>/remote/sleep` (slot 1) | any | `rf_sleep` |
+| `harmony/ir/pronto` | a Pronto hex code | sends it on every IR port once |
+
+They answer nothing on `cmd/response`; use `<base>/cmd` for acknowledged commands.
+
+#### MQTT-type devices
+A device of type `MQTT` (or with `mqttEnabled`) is driven through the broker instead of IR or
+Bluetooth: a command to it (an activity sequence, `POST /api/ir-send`, the remote, the command
+channel) publishes `"1"` on its topic, then `"0"` after `mqttPulseMs` (default 1000), and raises the
+`button` event (10.13) as well. The topic comes from the device's `mqttTopic` template
+(default `{base_topic}/button/{device}/{command}`; placeholders `{base_topic}` or `{root}`,
+`{device}` or `{device_id}`, `{command}` or `{button}`; a template starting with `/` is appended to
+the base topic). `POST /api/device-save` stores `mqttTopic` and `mqttPulseMs`;
+`POST /api/device-mqtt-test` (3.8) publishes one pulse.
+
+#### Home Assistant discovery
+With `haDiscovery` on, the Hub publishes retained discovery configs under
+`<discoveryPrefix>/<component>/<ident>_<object>/config` (`ident` = the client id, lower case) on
+every connect, on Home Assistant's birth message (`<discoveryPrefix>/status` = `online`), on
+`<base>/sync` and whenever the configuration changes; turning `haDiscovery` off publishes empty
+payloads to the same topics. The object ids are those of the first MQTT layer, so entities created
+before v2 are kept. All entities belong to one device (identifiers: `ident` and
+`harmony-ng-<hub_id>`, name = the hub name, `configuration_url` = the web UI) and use
+`<base>/status` for availability:
+
+| Entity | Reads | Writes |
+| --- | --- | --- |
+| select `Activity` (options `PowerOff` and the activity names) | `activity_state.activity`, mapped to the name in the template | `<base>/activity/set` |
+| sensor `Activity ID` (diagnostic) | `activity_state.activity` | |
+| sensor `IP Address` (diagnostic, attributes = the `hub` object) | `hub.ip` | |
+| sensor `Firmware` (diagnostic) | `hub.version` | |
+| sensor `IR Devices`, `IR Commands` (diagnostic) | `hub.device_count`, `hub.command_count` | |
+| button `Power Off` | | `<base>/activity/set` = `PowerOff` |
+| button `Sync` (config) | | `<base>/sync` |
+| button `Remote 1 Sleep`, `Remote 2 Sleep` (config) | | `<base>/remote/<n>/sleep` |
+
+The harmony-ng Home Assistant integration does not use these entities; they are for installations
+that drive the Hub through the MQTT integration only.
 
 #### Command channel
 Publish to `<base>/cmd`:
