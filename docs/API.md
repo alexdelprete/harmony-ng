@@ -185,11 +185,15 @@ Returns global hub settings from `/data/harmony/config/settings.json`.
     "ntp_server": "pool.ntp.org",
     "timezone": "Europe/Amsterdam",
     "led_mode": "always_on",
-    "mdns_enabled": true
+    "mdns_enabled": true,
+    "legacy_enabled": false
   }
   ```
   - `mdns_enabled` (default `true`): the mDNS responder (1.11). Changing it starts or stops the
     responder at once.
+  - `legacy_enabled` (default `false`): the Logitech protocol shim on port 8088 and its SSDP
+    responder (1.12). Changing it opens or closes the port at once; turning it off also closes
+    every client connected to it.
 
 #### `POST /api/settings`
 Updates global hub settings.
@@ -200,7 +204,9 @@ Updates global hub settings.
     "dry_run": false,
     "ntp_server": "pool.ntp.org",
     "timezone": "Europe/Amsterdam",
-    "led_mode": "always_on"
+    "led_mode": "always_on",
+    "mdns_enabled": true,
+    "legacy_enabled": false
   }
   ```
   *Note: `timezone` accepts standard IANA timezone identifiers (e.g. `"Europe/Amsterdam"`, `"America/New_York"`, `"Asia/Tokyo"`) or explicit POSIX TZ strings (e.g. `"CET-1CEST,M3.5.0,M10.5.0/3"`).*
@@ -263,8 +269,59 @@ and sends a goodbye (TTL 0) on a clean stop.
   | `auth` | `1` when authentication is enabled |
   | `mqtt` | `1` when the MQTT client is configured |
   | `topic` | MQTT base topic, only when `mqtt=1` |
-  | `legacy` | `1` when the Logitech protocol shim is enabled (milestone 4; `0` until then) |
+  | `legacy` | `1` when the Logitech protocol shim (1.12) is enabled |
   | `name` | raw `hub_name`, for display |
+
+### 1.12 Logitech protocol compatibility (port 8088, SSDP)
+With `legacy_enabled` on (capability flag `legacy`), `hub_daemon` speaks the stock Logitech Hub
+protocol on port 8088, as Home Assistant's core `harmony` integration (aioharmony 1.0.8) and other
+stock clients expect, and answers SSDP searches so the core integration discovers the Hub. Off by
+default. Port 8088 is never authenticated: the stock protocol has no authentication, so enable it
+only on a trusted network. The daemon's own API on 8089 (sections 1 to 11) is unchanged; both
+integrations can be used at the same time.
+
+- `POST /` on 8088 (body `{"id ":1,"cmd":"setup.account?getProvisionInfo","params":{}}`, the
+  trailing space in `id ` is what the client sends) answers the provisioning object:
+  `{"id":1,"code":200,"msg":"OK","data":{"activeRemoteId":"<id>","hubSwVersion":"<version>",
+  "discoveryServer":"https://svcs.myharmony.com/Discovery/Discovery.svc","hubName":"<hub_name>",
+  "accountId":"0","email":""}}`. `activeRemoteId` is the client's unique id for the Hub: the stock
+  `remoteId` from `/data/luaworks/provision/preferences` when that file survived the harmony-ng
+  install (a user migrating from stock keeps the core integration's entry), else a stable number
+  derived from `hub_id`. A bare TCP connect without data (the client's probe) is accepted quietly.
+- `GET /description` on 8088: the UPnP device description (`deviceType`
+  `urn:myharmony-com:device:harmony:1`, `manufacturer` Logitech, `friendlyName` = `hub_name`,
+  `modelName` Harmony Hub, `UDN` `uuid:<v5 of hub_id>`, `serialNumber` = `hub_id`). Any other
+  path is `404`.
+- WebSocket on `ws://<hub>:8088/?domain=svcs.myharmony.com&hubId=<activeRemoteId>`. Requests are
+  `{"hubId":"<activeRemoteId>","timeout":5,"hbus":{"cmd":"<mime>?<command>","id":"<uuid>",
+  "params":{...}}}`, replies `{"cmd":"<cmd>","id":"<id>","code":200,"msg":"OK","data":{...}}`
+  (`code` is a number; unknown commands get `404`). A digest notify is sent right after the
+  upgrade. Commands:
+
+  | `cmd` | Reply `data` |
+  | --- | --- |
+  | `vnd.logitech.harmony/vnd.logitech.harmony.engine?config` | the stock configuration object built from `devices.json` and `activities.json` on every request: `activity[]` (with the `-1` `PowerOff` entry last), `device[]` with `controlGroup[].function[].action` as a JSON-encoded string, `global.timeStampHash` `<inventory_version>;<activeRemoteId>`. Ids are the daemon's ids when numeric, else a stable CRC32-derived number (mapped back on `runactivity` and `holdAction`) |
+  | `...?getCurrentActivity` | `{"result":"<activity id>"}`, `"-1"` when idle |
+  | `harmony.activityengine?runactivity` (`activityId`, `"-1"` = power off) | `{}` with `code` 200 at once (`500` "Busy" or "Unknown activity"), then the start sequence below |
+  | `...?holdAction` (`status` `press` or `release`, `action` with `::` for `:`) | no reply on success; `code` 500 reply on error. Same press, hold and release path as `send_command` on 8089 |
+  | `harmony.engine?changeChannel` (`channel` digits) | `{}`; the digits go to the first device of the running activity with digit commands, 200 ms apart; `500` without one |
+  | `setup.sync?None` | `{}` |
+  | `vnd.logitech.connect/vnd.logitech.statedigest?get` | the digest: `activityId`, `activityStatus` (0 idle, 1 starting, 2 running, 3 stopping), `configVersion` (changes when the inventory changes), `syncStatus` 0, `hubSwVersion`, `runningActivityList`, and the other stock fields |
+  | `connect.discoveryinfo?get` | `friendlyName`, `remoteId`, `hubId`, `current_fw_version`, `protocolVersion` |
+
+- Activity start sequence for a `runactivity` with id M: the `code` 200 reply; on the first
+  step a `{"type":"connect.stateDigest?notify","data":{...activityStatus 1...}}` to every 8088
+  client; per step `{"cmd":"harmony.engine?startActivity","id":M,"code":100,"data":{"done":n,
+  "total":m}}` to the requester; on completion `{"cmd":"harmony.engine?startActivity","id":M,
+  "code":200,"data":{}}` to the requester, then `{"type":"harmony.engine?startActivityFinished",
+  "data":{"activityId":"<id>","errorCode":"200","errorString":"OK"}}` and a final digest notify
+  (`activityStatus` 2, or 0 after a power off) to every 8088 client. Switches made elsewhere (the
+  remote, the web UI, 8089 clients, MQTT) produce the notifications only, so stock clients follow
+  them. A config change produces a digest notify (new `configVersion`) so clients refetch.
+- SSDP: `M-SEARCH` for `ssdp:all`, `upnp:rootdevice` or `urn:myharmony-com:device:harmony:1` on
+  239.255.255.250:1900 is answered with `LOCATION: http://<ip>:8088/description`, `ST`, `USN:
+  uuid:<uuid>::urn:myharmony-com:device:harmony:1`, `CACHE-CONTROL: max-age=1800`; `NOTIFY
+  ssdp:alive` on enable and every 900 s, `ssdp:byebye` on disable and at shutdown.
 
 ## 2. Firmware & OTA Updates
 

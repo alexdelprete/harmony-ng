@@ -157,7 +157,7 @@ paths:
                 version: 2.2.0
                 commit: abc1234
                 api_version: 2
-                capabilities: [events, snapshot, ws_auth, ws_keepalive, ir_raw, mdns, mqtt_v2, rf_wake]
+                capabilities: [events, snapshot, ws_auth, ws_keepalive, ir_raw, mdns, legacy, mqtt_v2, rf_wake]
                 legacy_enabled: false
                 mdns_enabled: true
                 activity: "-1"
@@ -768,6 +768,7 @@ paths:
                 timezone: Europe/Amsterdam
                 led_mode: always_on
                 mdns_enabled: true
+                legacy_enabled: false
     post:
       tags:
         - System & Status
@@ -788,6 +789,7 @@ paths:
                 timezone: {type: string, description: "IANA timezone name or POSIX TZ string"}
                 led_mode: {type: string}
                 mdns_enabled: {type: boolean, default: true, description: "mDNS responder for _harmony-ng._tcp; takes effect at once"}
+                legacy_enabled: {type: boolean, default: false, description: "Logitech protocol shim on port 8088 (never authenticated) and its SSDP responder; takes effect at once, off closes every 8088 client"}
             example:
               hub_name: Living Room Hub
               dry_run: false
@@ -795,6 +797,7 @@ paths:
               timezone: Europe/Amsterdam
               led_mode: always_on
               mdns_enabled: true
+              legacy_enabled: false
       responses:
         '200':
           description: Settings saved
