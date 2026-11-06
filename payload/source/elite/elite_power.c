@@ -329,12 +329,16 @@ void read_elite_battery(void) {
     }
     s_last_batt_sample_ms = now_ms;
 
+    /* The PMIC's battery voltage in volts ("4.188"): one Li-ion cell, as the stock remote reads
+     * it (juniper/init.lua: default "3.80", low battery below 3.55 V). It used to be multiplied
+     * by 2000, which reported twice the cell voltage (8376 mV for 4.188 V). */
     FILE *fv = fopen("/sys/devices/platform/i2c_davinci.1/i2c-1/1-0048/tps6507x-juniper/vbat", "r");
-    float v = 2.05f;
+    float v = 0.0f;
     uint16_t raw_mv = g_battery_info.voltage_mv;
     if (fv) {
         if (fscanf(fv, "%f", &v) == 1) {
-            raw_mv = (uint16_t)(v * 2000.0f);
+            if (v > 0.5f && v < 6.0f) raw_mv = (uint16_t)(v * 1000.0f + 0.5f);  /* volts (the PMIC) */
+            else if (v > 500.0f && v < 6000.0f) raw_mv = (uint16_t)(v + 0.5f);  /* millivolts (the test mock) */
         }
         fclose(fv);
     }
@@ -386,17 +390,13 @@ void read_elite_battery(void) {
     uint16_t avg_mv = (uint16_t)(sum / BATT_SAMPLE_COUNT);
     g_battery_info.voltage_mv = avg_mv;
 
+    /* Linear over 3.40 to 4.10 V per cell: the same curve the doubled reading used (6.80 to
+     * 8.20 V), so the percentages do not move with this fix */
     int mv = g_battery_info.voltage_mv;
     int pct = 0;
-    if (mv > 5000) {
-        if (mv >= 8200) pct = 100;
-        else if (mv <= 6800) pct = 0;
-        else pct = (int)((mv - 6800) * 100 / (8200 - 6800));
-    } else {
-        if (mv >= 4150) pct = 100;
-        else if (mv <= 3400) pct = 0;
-        else pct = (int)((mv - 3400) * 100 / (4150 - 3400));
-    }
+    if (mv >= 4100) pct = 100;
+    else if (mv <= 3400) pct = 0;
+    else pct = (int)((mv - 3400) * 100 / (4100 - 3400));
     if (pct < 0) pct = 0;
     if (pct > 100) pct = 100;
 
