@@ -121,7 +121,6 @@ int main(int argc, char **argv) {
     orch_init();
     ir_i2s_init();
     orch_set_progress_callback(on_orch_progress, NULL);
-    hw_set_mqtt_button_handler(daemon_mqtt_button_handler);
     printf("[+] Hardware core & Activity Orchestrator initialized (current: %s)\n",
            orch_get_current_activity());
 
@@ -259,7 +258,6 @@ int main(int argc, char **argv) {
         ws_server_tick();
         /* mDNS probing, announcements, IP and TXT changes */
         hub_mdns_tick();
-        mqtt_cmd_tick();
 
         /* Tick SNTP network time sync */
         sntp_tick(ntp_host);

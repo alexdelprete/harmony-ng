@@ -42,9 +42,10 @@ Returns high-level hub status, firmware, identity, active activity, memory, upti
     "uptime_sec": 34821,
     "mqtt": {
       "connected": true,
-      "host": "192.168.1.50",
+      "broker": "192.168.1.50",
       "port": 1883,
-      "base_topic": "harmony/hub"
+      "baseTopic": "harmony/hub",
+      "v2": true
     }
   }
   ```
@@ -429,26 +430,9 @@ Deletes a command by name from a device.
 - **Response `200 OK`**: `{"ok": true}`
 
 ### 3.8 Device MQTT Test
-#### `POST /api/device-mqtt-test`
-Tests device MQTT command routing without running full sequences.
-- **Request Body**:
-  ```json
-  {
-    "deviceId": "70321456",
-    "command": "PowerToggle",
-    "topic": "home/livingroom/tv",
-    "pulseMs": 500
-  }
-  ```
-- **Response `200 OK`**:
-  ```json
-  {
-    "ok": true,
-    "pulseMs": 500,
-    "topic": "home/livingroom/tv/command",
-    "message": "MQTT test publish sent"
-  }
-  ```
+Removed with MQTT v2 (8.1): `POST /api/device-mqtt-test` answers `404`. Devices of type MQTT keep
+their type, but the per-device `mqttTopic` and `mqttPulseMs` fields are ignored and no longer
+stored; a command sent to such a device becomes a `button` event (10.13) on the bus and on MQTT.
 
 ---
 
@@ -654,9 +638,9 @@ Dedicated blaster endpoint for raw Pronto hex code streams.
 
 ### 5.3 Button Press & MQTT Dispatch
 #### `POST /api/button-press` or `POST /api/mqtt-publish`
-Dispatches a button press pulse to local MQTT broker and hardware handlers. Every call also
-gives a `button` event on the WebSocket (10.13) for `action` `press` (the default) and `release`;
-`hold` repeats only reach MQTT. `hub_rf` posts physical keys as `{"button": <key name>,
+Reports a physical key. Every call gives a `button` event on the WebSocket (10.13) and on MQTT
+(`<base>/remote/<slot>/button`, 8.1) for `action` `press` (the default) and `release`; `hold`
+repeats give nothing (they are sent to the device by `hub_rf` itself). `hub_rf` posts physical keys as `{"button": <key name>,
 "action", "source": "elite_rf", "slot"}` plus `deviceId` and `command` when the key was mapped to
 a device command; other callers may keep posting the key as `command`.
 - **Request Body**:
@@ -667,15 +651,8 @@ a device command; other callers may keep posting the key as `command`.
     "pulseMs": 100
   }
   ```
-- **Response `200 OK`**:
-  ```json
-  {
-    "ok": true,
-    "pulseMs": 100,
-    "topic": "harmony/hub/button/70321456/VolumeUp",
-    "reply": "ok"
-  }
-  ```
+- **Response `200 OK`**: `{"ok": true, "button": "VolumeUp"}` (the MQTT pulse topics of the old
+  layer are gone, see 8.1).
 
 ---
 
@@ -951,10 +928,17 @@ Saves virtual remote keypad layout for WebUI and Android App.
 
 ## 8. Network & Broker Configuration
 
-### 8.1 MQTT Settings
+### 8.1 MQTT (v2)
+The MQTT layer carries the same information as the WebSocket (section 10): every state change is
+published on change, retained where it is state, never on a timer; commands are acknowledged.
+Capability flag `mqtt_v2`; `GET /api/mqtt-status` and the `mqtt` member of `/api/status` carry
+`"v2": true`. There are no Home Assistant discovery entities: the Home Assistant integration for
+harmony-ng replaces them (on the first start of this firmware the old discovery configs and the old
+state topics get an empty retained payload once, so brokers and Home Assistant drop them; marker
+`/data/harmony/mqtt_v2_migrated`).
+
 #### `POST /api/mqtt-save` or `POST /mqtt`
-Configures hub MQTT broker credentials, port, base topic, and per-slot remote button event mirroring.
-- **Request Body**:
+- **Request Body** (every field optional; `password` is kept when absent or empty):
   ```json
   {
     "enabled": true,
@@ -963,17 +947,70 @@ Configures hub MQTT broker credentials, port, base topic, and per-slot remote bu
     "username": "homeassistant",
     "password": "password",
     "baseTopic": "harmony/hub",
-    "clientId": "harmony_hub",
-    "slot1RemoteEvents": true,
-    "slot1RemoteTopic": "harmony/hub/remote/1/events",
-    "slot2RemoteEvents": false,
-    "slot2RemoteTopic": "harmony/hub/remote/2/events"
+    "clientId": "harmony_hub"
   }
   ```
-- **Response `200 OK`**: `{"ok": true}`
+  The fields of the old layer (`discoveryPrefix`, `haDiscovery`, `name`, `keepAlive`,
+  `btRemoteEvents`/`Topic`, `eliteRemoteEvents`/`Topic`, `slotNRemoteEvents`/`Topic`) are ignored
+  and removed from the stored file: button events are always published on
+  `<base>/remote/<slot>/button`.
+- **Response `200 OK`**: `{"ok": true, "message": "MQTT settings saved"}`; the client reconnects.
 
 #### `GET /api/mqtt-status`
-Queries current MQTT connection state and parameters.
+`{"ok": true, "connected": true, "broker": "...", "port": 1883, "baseTopic": "harmony/hub", "v2": true, "config": {...}}`
+
+#### Topics
+`<base>` is `baseTopic` (default `harmony/hub`). Payloads are JSON objects with `type`, `seq` and
+`ts` as on the WebSocket (10.8 to 10.13), except `status`.
+
+| Topic | Retained | QoS | Payload |
+| --- | --- | --- | --- |
+| `<base>/status` | yes | 1 | `online` / `offline` (last will) |
+| `<base>/hub` | yes | 1 | `{"type":"hub", ...}`: the `hub` object of the snapshot (10.14) |
+| `<base>/activity_state` | yes | 1 | `activity_state` (10.8) |
+| `<base>/progress` | no | 0 | `activity_progress` (10.9) |
+| `<base>/bt` | yes | 1 | `bt_status` (10.11) |
+| `<base>/rf` | yes | 1 | `rf_status` (10.12) |
+| `<base>/config` | yes | 1 | `{"type":"config","files":{mtimes},"inventory_version":"<8 hex>","ts"}` |
+| `<base>/inventory/index` | yes | 1 | `{"type":"inventory_index","inventory_version","devices":[{"id","name","deviceType","manufacturer","model"}],"activities":[{"id","name","activityType","order"}]}` |
+| `<base>/inventory/<deviceId>` | yes | 1 | `{"type":"inventory_device","id","name","deviceType","manufacturer","model","controlPort","commands":["PowerToggle", ...]}` (names only); split into `<deviceId>/<n>` with `part`/`parts` when a device does not fit one packet |
+| `<base>/remote/<slot>/button` | no | 1 | `button` (10.13); events without a slot go to `<base>/button` |
+| `<base>/cmd` | in | 1 | command request (below) |
+| `<base>/cmd/response` | no | 1 | command reply (below) |
+| `<base>/ir/raw` | in | 1 | the body of `POST /api/ir-raw` (5.4), optional `id` for a reply |
+
+`inventory_version` is the first 8 hex digits of the SHA-256 over the device and activity files. A
+device chunk is republished only when its own content changed, a removed device gets an empty
+retained payload, and the index is published last. Retained topics are republished on every
+(re)connect from the bus's last payloads. While the broker is down events are dropped (nothing is
+queued) and the retained state is resent on reconnect.
+
+The old topics `<base>/state`, `<base>/activity`, `<base>/current_activity`, `<base>/activity_id`,
+`<base>/activity/status`, the pulse topics (`<base>/button/device/<cmd>`, `remotes/slotN/Cmd`) and
+the old inbound topics (`<base>/activity/set`, `<base>/send_command`, `<base>/command`,
+`<base>/command/#`, `<base>/sync`, `<base>/remote/<n>/sleep`, `<base>/remote/sleep`,
+`harmony/ir/pronto`) are gone. Pronto over MQTT goes away; `POST /api/ir-send` keeps it.
+
+#### Command channel
+Publish to `<base>/cmd`:
+```json
+{"id": "c7d1", "action": "start_activity", "activity": "123456"}
+```
+`id` is an opaque client string (up to 64 characters), echoed in the reply; a request without `id`
+is executed and not answered. Actions and fields mirror the WebSocket actions (section 10):
+`ping`, `get_state`, `get_snapshot` (the reply carries the snapshot), `start_activity` (`activity`),
+`stop_activity`, `cancel_activity`, `send_command` (`deviceId`, `command`, `status` = `press`,
+`hold`, `release` or omitted for a tap), `bt_key` (`key`, `keyAction`, `target`), `bt_text`,
+`bt_mouse`, `rf_wake` (`slot`), `rf_sleep` (`slot`), `sync`, `ir_raw` (fields of 5.4).
+
+Reply on `<base>/cmd/response`:
+```json
+{"type": "cmd_response", "id": "c7d1", "action": "start_activity", "ok": true}
+{"type": "cmd_response", "id": "c7d1", "action": "start_activity", "ok": false, "code": 409, "error": "busy"}
+{"type": "cmd_response", "id": "c7d2", "action": "get_state", "ok": true, "activity_state": {...}}
+```
+Codes and errors equal the REST ones (400 bad input, 409 busy, 503 a service is not running).
+Malformed JSON is answered with `code` 400 when an `id` can be recovered, otherwise logged.
 
 ### 8.2 Wi-Fi Scanning & Configuration
 #### `GET /api/wifi-scan`

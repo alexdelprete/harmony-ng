@@ -19,6 +19,7 @@ static const char *const k_capabilities[] = {
     "ws_keepalive",
     "ir_raw",
     "mdns",
+    "mqtt_v2",
     "rf_wake",
     NULL
 };

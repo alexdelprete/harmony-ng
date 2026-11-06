@@ -7,7 +7,6 @@
 #include "hub_cmd.h"
 #include "state_watch.h"
 #include "config_store.h"
-#include "hub_mqtt.h"
 #include "orchestrator.h"
 #include "hw_action.h"
 #include "cJSON.h"
@@ -135,13 +134,7 @@ void on_orch_progress(const char *activity_id, orch_state_t state,
     cJSON_AddStringToObject(root, "desc", desc);
     cJSON_AddStringToObject(root, "stepDesc", desc);
 
-    /* MQTT keeps the message as it was until milestone 3 moves it to a bus sink; WebSocket
-     * clients get it from the bus (hub_ws_event_sink) */
-    char *json_msg = cJSON_PrintUnformatted(root);
-    if (json_msg) {
-        hub_mqtt_publish_progress(json_msg);
-        free(json_msg);
-    }
+    /* WebSocket clients and MQTT get it from the bus (their sinks) */
     hub_events_emit(HUB_EV_ACTIVITY_PROGRESS, root);
 }
 

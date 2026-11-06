@@ -31,7 +31,6 @@ gcc -Wall -O2 -g -DTEST_HARNESS=1 \
     "$REPO_ROOT/payload/source/orchestrator.c" \
     "$REPO_ROOT/payload/source/orchestrator_queue.c" \
     "$REPO_ROOT/payload/source/hub_mqtt.c" \
-    "$REPO_ROOT/payload/source/hub_mqtt_ha.c" \
     "$REPO_ROOT/payload/source/hub_ws.c" \
     "$REPO_ROOT/payload/source/hub_ntp.c" \
     "$REPO_ROOT/payload/source/resource_cache.c" \

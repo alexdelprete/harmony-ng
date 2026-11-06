@@ -146,6 +146,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         cJSON_AddStringToObject(mj, "broker", mhost);
         cJSON_AddNumberToObject(mj, "port", mport);
         cJSON_AddStringToObject(mj, "baseTopic", mbase);
+        cJSON_AddBoolToObject(mj, "v2", 1);
         cJSON_AddItemToObject(st, "mqtt", mj);
 
         http_ensure_icons_extracted();
@@ -188,6 +189,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         cJSON_AddStringToObject(resp, "broker", mhost);
         cJSON_AddNumberToObject(resp, "port", mport);
         cJSON_AddStringToObject(resp, "baseTopic", mbase);
+        cJSON_AddBoolToObject(resp, "v2", 1);
 
         cJSON *cfg = config_store_get_mqtt_json();
         if (cfg) {
@@ -443,84 +445,15 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
                 cJSON_AddStringToObject(cfg, "clientId", p_cid->valuestring);
             }
 
-            cJSON *p_disc = cJSON_GetObjectItemCaseSensitive(params, "discoveryPrefix");
-            if (p_disc && cJSON_IsString(p_disc) && p_disc->valuestring[0]) {
-                cJSON_DeleteItemFromObject(cfg, "discoveryPrefix");
-                cJSON_AddStringToObject(cfg, "discoveryPrefix", p_disc->valuestring);
-            }
-
-            cJSON *p_name = cJSON_GetObjectItemCaseSensitive(params, "name");
-            if (p_name && cJSON_IsString(p_name) && p_name->valuestring[0]) {
-                cJSON_DeleteItemFromObject(cfg, "name");
-                cJSON_AddStringToObject(cfg, "name", p_name->valuestring);
-            }
-
-            cJSON *p_ka = cJSON_GetObjectItemCaseSensitive(params, "keepAlive");
-            if (p_ka) {
-                int kanum = cJSON_IsNumber(p_ka) ? p_ka->valueint : (cJSON_IsString(p_ka) ? atoi(p_ka->valuestring) : 60);
-                cJSON_DeleteItemFromObject(cfg, "keepAlive");
-                cJSON_AddNumberToObject(cfg, "keepAlive", kanum > 0 ? kanum : 60);
-            }
-
-            cJSON *p_ha = cJSON_GetObjectItemCaseSensitive(params, "haDiscovery");
-            if (p_ha) {
-                int ha_val = cJSON_IsTrue(p_ha) || (cJSON_IsNumber(p_ha) && p_ha->valueint > 0) || (cJSON_IsString(p_ha) && strcmp(p_ha->valuestring, "1") == 0);
-                cJSON_DeleteItemFromObject(cfg, "haDiscovery");
-                cJSON_AddBoolToObject(cfg, "haDiscovery", ha_val);
-            }
-
-            cJSON *p_btr = cJSON_GetObjectItemCaseSensitive(params, "btRemoteEvents");
-            if (p_btr) {
-                int btr_val = cJSON_IsTrue(p_btr) || (cJSON_IsNumber(p_btr) && p_btr->valueint > 0) || (cJSON_IsString(p_btr) && strcmp(p_btr->valuestring, "1") == 0);
-                cJSON_DeleteItemFromObject(cfg, "btRemoteEvents");
-                cJSON_AddBoolToObject(cfg, "btRemoteEvents", btr_val);
-            }
-
-            cJSON *p_btrt = cJSON_GetObjectItemCaseSensitive(params, "btRemoteTopic");
-            if (p_btrt && cJSON_IsString(p_btrt)) {
-                cJSON_DeleteItemFromObject(cfg, "btRemoteTopic");
-                cJSON_AddStringToObject(cfg, "btRemoteTopic", p_btrt->valuestring);
-            }
-
-            cJSON *p_el = cJSON_GetObjectItemCaseSensitive(params, "eliteRemoteEvents");
-            if (p_el) {
-                int el_val = cJSON_IsTrue(p_el) || (cJSON_IsNumber(p_el) && p_el->valueint > 0) || (cJSON_IsString(p_el) && (strcmp(p_el->valuestring, "1") == 0 || strcasecmp(p_el->valuestring, "true") == 0));
-                cJSON_DeleteItemFromObject(cfg, "eliteRemoteEvents");
-                cJSON_AddBoolToObject(cfg, "eliteRemoteEvents", el_val);
-            }
-
-            cJSON *p_elt = cJSON_GetObjectItemCaseSensitive(params, "eliteRemoteTopic");
-            if (p_elt && cJSON_IsString(p_elt)) {
-                cJSON_DeleteItemFromObject(cfg, "eliteRemoteTopic");
-                cJSON_AddStringToObject(cfg, "eliteRemoteTopic", p_elt->valuestring);
-            }
-
-            cJSON *p_s1e = cJSON_GetObjectItemCaseSensitive(params, "slot1RemoteEvents");
-            if (p_s1e) {
-                int s1_val = cJSON_IsTrue(p_s1e) || (cJSON_IsNumber(p_s1e) && p_s1e->valueint > 0) || (cJSON_IsString(p_s1e) && (strcmp(p_s1e->valuestring, "1") == 0 || strcasecmp(p_s1e->valuestring, "true") == 0));
-                cJSON_DeleteItemFromObject(cfg, "slot1RemoteEvents");
-                cJSON_AddBoolToObject(cfg, "slot1RemoteEvents", s1_val);
-            }
-
-            cJSON *p_s1t = cJSON_GetObjectItemCaseSensitive(params, "slot1RemoteTopic");
-            if (p_s1t && cJSON_IsString(p_s1t)) {
-                cJSON_DeleteItemFromObject(cfg, "slot1RemoteTopic");
-                cJSON_AddStringToObject(cfg, "slot1RemoteTopic", p_s1t->valuestring);
-            }
-
-            cJSON *p_s2e = cJSON_GetObjectItemCaseSensitive(params, "slot2RemoteEvents");
-            if (p_s2e) {
-                int s2_val = cJSON_IsTrue(p_s2e) || (cJSON_IsNumber(p_s2e) && p_s2e->valueint > 0) || (cJSON_IsString(p_s2e) && (strcmp(p_s2e->valuestring, "1") == 0 || strcasecmp(p_s2e->valuestring, "true") == 0));
-                cJSON_DeleteItemFromObject(cfg, "slot2RemoteEvents");
-                cJSON_AddBoolToObject(cfg, "slot2RemoteEvents", s2_val);
-            }
-
-            cJSON *p_s2t = cJSON_GetObjectItemCaseSensitive(params, "slot2RemoteTopic");
-            if (p_s2t && cJSON_IsString(p_s2t)) {
-                cJSON_DeleteItemFromObject(cfg, "slot2RemoteTopic");
-                cJSON_AddStringToObject(cfg, "slot2RemoteTopic", p_s2t->valuestring);
-            }
-
+            /* Fields of the old MQTT layer are dropped from the stored config: discovery,
+             * device name, keepalive and the per-remote event topics (v2 publishes button
+             * events on <base>/remote/<slot>/button, always) */
+            static const char *const k_legacy_keys[] = {
+                "discoveryPrefix", "name", "deviceName", "keepAlive", "haDiscovery",
+                "btRemoteEvents", "btRemoteTopic", "eliteRemoteEvents", "eliteRemoteTopic",
+                "slot1RemoteEvents", "slot1RemoteTopic", "slot2RemoteEvents", "slot2RemoteTopic", NULL
+            };
+            for (int lk = 0; k_legacy_keys[lk]; lk++) cJSON_DeleteItemFromObject(cfg, k_legacy_keys[lk]);
             cJSON_DeleteItemFromObject(cfg, "pollSeconds");
             cJSON_DeleteItemFromObject(cfg, "mqttDevices");
             cJSON_DeleteItemFromObject(cfg, "devices");
@@ -590,8 +523,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
                 const char *top = (j_top && cJSON_IsString(j_top)) ? j_top->valuestring : "";
                 const char *pay = (j_pay && cJSON_IsString(j_pay)) ? j_pay->valuestring : "";
                 if (top[0]) {
-                    int pms = 0;
-                    mqtt_dispatch_button_pulse_topic(NULL, NULL, pay[0] ? pay : "cmd", top, 1000, NULL, 0, &pms);
+                    hub_mqtt_publish_plain(top, pay[0] ? pay : "cmd");
                 }
                 cJSON_Delete(params);
                 cJSON *resp = cJSON_CreateObject();

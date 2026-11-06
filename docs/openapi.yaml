@@ -157,7 +157,7 @@ paths:
                 version: 2.2.0
                 commit: abc1234
                 api_version: 2
-                capabilities: [events, snapshot, ws_auth, ws_keepalive, ir_raw, mdns, rf_wake]
+                capabilities: [events, snapshot, ws_auth, ws_keepalive, ir_raw, mdns, mqtt_v2, rf_wake]
                 legacy_enabled: false
                 mdns_enabled: true
                 activity: "-1"
@@ -173,9 +173,10 @@ paths:
                 user: admin
                 mqtt:
                   connected: true
-                  host: 192.168.1.50
+                  broker: 192.168.1.50
                   port: 1883
-                  base_topic: harmony/hub
+                  baseTopic: harmony/hub
+                  v2: true
 
   /api/system-info:
     get:
@@ -1112,39 +1113,6 @@ paths:
                 ok: true
                 count: 2
 
-  /api/device-mqtt-test:
-    post:
-      tags:
-        - Devices & Commands
-      summary: Test device MQTT command pulse
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                deviceId: {type: string}
-                command: {type: string}
-                topic: {type: string}
-                pulseMs: {type: integer}
-              required: [deviceId]
-            example:
-              deviceId: "70321456"
-              command: PowerToggle
-              topic: home/livingroom/tv
-              pulseMs: 500
-      responses:
-        '200':
-          description: MQTT publish success
-          content:
-            application/json:
-              example:
-                ok: true
-                pulseMs: 500
-                topic: home/livingroom/tv/command
-                message: MQTT test publish sent
-
   /api/activities:
     get:
       tags:
@@ -1629,14 +1597,12 @@ paths:
               pulseMs: 100
       responses:
         '200':
-          description: Button pulse dispatched
+          description: Button reported (a button event on the WebSocket and on MQTT)
           content:
             application/json:
               example:
                 ok: true
-                pulseMs: 100
-                topic: harmony/hub/button/70321456/VolumeUp
-                reply: ok
+                button: VolumeUp
 
   /api/bt-mouse:
     post:
@@ -2753,26 +2719,30 @@ paths:
     get:
       tags:
         - Network & MQTT
-      summary: MQTT client connection state
+      summary: MQTT connection state and settings
       responses:
         '200':
-          description: Broker connection metadata
+          description: Status
           content:
             application/json:
               example:
                 ok: true
                 connected: true
-                host: 192.168.1.50
+                broker: 192.168.1.50
                 port: 1883
-                username: homeassistant
-                clientId: harmony_hub
                 baseTopic: harmony/hub
+                v2: true
+                config: {enabled: true, host: 192.168.1.50, port: 1883, baseTopic: harmony/hub, clientId: harmony_hub}
 
   /api/mqtt-save:
     post:
       tags:
         - Network & MQTT
-      summary: Configure MQTT broker connection
+      summary: Save the MQTT broker settings (v2)
+      description: |
+        Also available as POST /mqtt. Fields of the old MQTT layer (discoveryPrefix, haDiscovery,
+        name, keepAlive, the per-remote event topics) are ignored and removed from the stored
+        file. The client reconnects after a save. Topics and the command channel: docs/API.md 8.1.
       requestBody:
         required: true
         content:
@@ -2784,25 +2754,25 @@ paths:
                 host: {type: string}
                 port: {type: integer, default: 1883}
                 username: {type: string}
-                password: {type: string}
-                baseTopic: {type: string, default: "harmony/hub"}
+                password: {type: string, description: "kept when absent or empty"}
+                baseTopic: {type: string, default: harmony/hub}
                 clientId: {type: string}
-              required: [host]
             example:
               enabled: true
               host: 192.168.1.50
               port: 1883
               username: homeassistant
-              password: password
+              password: secret
               baseTopic: harmony/hub
               clientId: harmony_hub
       responses:
         '200':
-          description: MQTT settings saved
+          description: Saved
           content:
             application/json:
               example:
                 ok: true
+                message: MQTT settings saved
 
   /api/wifi-scan:
     get:

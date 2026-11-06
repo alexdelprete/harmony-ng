@@ -17,10 +17,6 @@
 #include <unistd.h>
 #include <strings.h>
 
-int mqtt_dispatch_button_pulse_topic(const char *dev_id, const char *dev_name_in, const char *cmd_name,
-                                     const char *topic_in, int req_pulse_ms,
-                                     char *out_topic, size_t out_topic_len, int *out_pulse_ms);
-
 int http_api_devices_handle(int client_fd, const char *method, const char *clean_path,
                             const char *query, const char *body, const char *req) {
     (void)query;
@@ -229,60 +225,6 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
         cJSON_AddItemToObject(resp, "commands", res_cmds);
         send_cjson_resp(client_fd, 200, resp);
         cJSON_Delete(resp);
-        close(client_fd);
-        return 1;
-    }
-
-    /* Route: POST /api/device-mqtt-test */
-    if (strcmp(clean_path, "/api/device-mqtt-test") == 0 && strcmp(method, "POST") == 0) {
-        char dev_id[64] = {0};
-        char dev_name[128] = {0};
-        char cmd_name[128] = "PowerToggle";
-        char req_topic[256] = {0};
-        int req_pulse_ms = 1000;
-
-        cJSON *req_j = body ? parse_request_params(body) : NULL;
-        if (req_j) {
-            cJSON *jid = cJSON_GetObjectItemCaseSensitive(req_j, "deviceId");
-            if (!jid) jid = cJSON_GetObjectItemCaseSensitive(req_j, "id");
-            if (jid && cJSON_IsString(jid)) strncpy(dev_id, jid->valuestring, sizeof(dev_id) - 1);
-            else if (jid && cJSON_IsNumber(jid)) snprintf(dev_id, sizeof(dev_id), "%ld", (long)jid->valuedouble);
-
-            cJSON *jdev = cJSON_GetObjectItemCaseSensitive(req_j, "device");
-            if (jdev && cJSON_IsString(jdev)) strncpy(dev_name, jdev->valuestring, sizeof(dev_name) - 1);
-
-            cJSON *jcmd = cJSON_GetObjectItemCaseSensitive(req_j, "command");
-            if (jcmd && cJSON_IsString(jcmd) && jcmd->valuestring[0]) strncpy(cmd_name, jcmd->valuestring, sizeof(cmd_name) - 1);
-
-            cJSON *jtop = cJSON_GetObjectItemCaseSensitive(req_j, "topic");
-            if (!jtop) jtop = cJSON_GetObjectItemCaseSensitive(req_j, "mqttTopic");
-            if (jtop && cJSON_IsString(jtop) && jtop->valuestring[0]) strncpy(req_topic, jtop->valuestring, sizeof(req_topic) - 1);
-
-            cJSON *jp = cJSON_GetObjectItemCaseSensitive(req_j, "pulseMs");
-            if (!jp) jp = cJSON_GetObjectItemCaseSensitive(req_j, "mqttPulse");
-            if (jp && cJSON_IsNumber(jp) && jp->valueint > 0) req_pulse_ms = jp->valueint;
-            cJSON_Delete(req_j);
-        }
-
-        if (!dev_name[0] && dev_id[0]) {
-            strncpy(dev_name, dev_id, sizeof(dev_name) - 1);
-        }
-
-        char final_topic[256] = {0};
-        int final_pulse_ms = 0;
-        int mrc = mqtt_dispatch_button_pulse_topic(dev_id, dev_name, cmd_name, req_topic[0] ? req_topic : NULL, req_pulse_ms,
-                                                  final_topic, sizeof(final_topic), &final_pulse_ms);
-        if (mrc == 0) {
-            cJSON *resp_j = cJSON_CreateObject();
-            cJSON_AddBoolToObject(resp_j, "ok", 1);
-            cJSON_AddNumberToObject(resp_j, "pulseMs", final_pulse_ms);
-            cJSON_AddStringToObject(resp_j, "topic", final_topic);
-            cJSON_AddStringToObject(resp_j, "message", "MQTT test publish sent");
-            send_cjson_resp(client_fd, 200, resp_j);
-            cJSON_Delete(resp_j);
-        } else {
-            send_json_error(client_fd, 503, "MQTT broker not connected");
-        }
         close(client_fd);
         return 1;
     }

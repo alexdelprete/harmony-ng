@@ -151,15 +151,9 @@ void sanitize_devices_json(cJSON *root) {
             }
         }
 
-        /* MQTT */
-        if (is_mqtt) {
-            cJSON_AddBoolToObject(cdev, "mqttEnabled", 1);
-            cJSON *jtop = cJSON_GetObjectItemCaseSensitive(src_d, "mqttTopic");
-            cJSON_AddStringToObject(cdev, "mqttTopic", (jtop && jtop->valuestring && jtop->valuestring[0]) ?
-                                    jtop->valuestring : "{base_topic}/button/{device}/{command}");
-            cJSON *jpul = cJSON_GetObjectItemCaseSensitive(src_d, "mqttPulseMs");
-            cJSON_AddNumberToObject(cdev, "mqttPulseMs", (jpul && cJSON_IsNumber(jpul)) ? jpul->valueint : 1000);
-        }
+        /* MQTT-type devices keep their type; the per-device topic and pulse fields of the old
+         * MQTT layer are no longer stored (ignored when present) */
+        if (is_mqtt) cJSON_AddBoolToObject(cdev, "mqttEnabled", 1);
 
         /* Power Sequences */
         cJSON *po = cJSON_GetObjectItemCaseSensitive(src_d, "powerOnSequence");

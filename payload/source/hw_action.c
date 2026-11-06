@@ -19,11 +19,6 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 
-static hw_mqtt_button_handler_t g_mqtt_button_handler = NULL;
-
-void hw_set_mqtt_button_handler(hw_mqtt_button_handler_t handler) {
-    g_mqtt_button_handler = handler;
-}
 
 
 static char *build_button_press_json(const char *device_id, const char *dev_name, const char *command, int action) {
@@ -686,9 +681,9 @@ static int hw_device_command_send_match(const char *target, int match_mode, cons
         }
     } else if (is_mqtt || strncmp(keycode_str, "G:MQTT", 6) == 0) {
         const char *actual_dev_id_str = target_id_str[0] ? target_id_str : target;
-        if (g_mqtt_button_handler) {
-            ret = g_mqtt_button_handler(actual_dev_id_str, dev_name, command);
-        } else {
+        {
+            /* MQTT-type devices: the old pulse publish is gone (MQTT v2); the command becomes a
+             * button event on the daemon's bus, published on <base>/button */
             /* Dispatch MQTT button to hub_daemon on 127.0.0.1:8089 */
             int mfd = socket(AF_INET, SOCK_STREAM, 0);
             if (mfd >= 0) {

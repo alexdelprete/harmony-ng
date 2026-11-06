@@ -72,8 +72,6 @@ int hw_device_command_send_by_name(const char *device_name, const char *command)
 /*
  * Callback registration for in-process MQTT button dispatch (used by hub_daemon to avoid loopback socket deadlock).
  */
-typedef int (*hw_mqtt_button_handler_t)(const char *device_id, const char *dev_name, const char *command);
-void hw_set_mqtt_button_handler(hw_mqtt_button_handler_t handler);
 
 /*
  * Sends a BT HID report directly via BTstack FIFO (/tmp/bthid_input).

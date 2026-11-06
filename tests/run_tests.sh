@@ -40,7 +40,6 @@ if [ ! -f "$HOST_BUILD_DIR/hub_daemon_test" ]; then
         "$REPO_ROOT/payload/source/orchestrator.c" \
         "$REPO_ROOT/payload/source/orchestrator_queue.c" \
         "$REPO_ROOT/payload/source/hub_mqtt.c" \
-        "$REPO_ROOT/payload/source/hub_mqtt_ha.c" \
         "$REPO_ROOT/payload/source/hub_ws.c" \
         "$REPO_ROOT/payload/source/hub_ntp.c" \
         "$REPO_ROOT/payload/source/resource_cache.c" \
@@ -221,6 +220,7 @@ if [ -f "$HOST_BUILD_DIR/hub_daemon_test" ]; then
     python3 "$SCRIPT_DIR/test_ws_keepalive.py"
     python3 "$SCRIPT_DIR/test_ir_raw.py"
     python3 "$SCRIPT_DIR/test_mdns.py"
+    python3 "$SCRIPT_DIR/test_mqtt_v2.py"
 else
     echo "[-] Validating cross-compiled binary headers and integrity..."
     file "$DAEMON_BIN" || true
