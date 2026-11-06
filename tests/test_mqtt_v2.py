@@ -102,14 +102,46 @@ def main():
             cleared = {t for (t, p, rt, q) in broker.log if rt and p == b""}
             for t in ("state", "activity", "current_activity", "activity_id"):
                 check((BASE + "/" + t) in cleared, "old topic %s cleared" % t, str(sorted(cleared))[:200])
-            for t in ("select/harmony-test_activity/config", "sensor/harmony-test_activity_id/config",
-                      "button/harmony-test_power_off/config", "button/harmony-test_remote_2_sleep/config"):
-                check(("homeassistant/" + t) in cleared, "discovery %s cleared" % t.split("/")[1])
             marker = os.path.join(hub.data_dir, "mqtt_v2_migrated")
             check(os.path.exists(marker), "marker file written once")
             # nothing old is published or subscribed any more
             published = {t for (t, p, rt, q) in broker.log if p}
             check(not any(t.endswith("/state") or t.endswith("/activity_id") for t in published), "no old state payloads", str(published))
+            check(hubo is not None and hubo.get("device_count") == 2 and hubo.get("command_count") == 8 and "ip" in hubo,
+                  "hub carries ip, device_count and command_count", str(hubo))
+
+            print("[-] 5.4 Home Assistant discovery on the v2 topics")
+            sel = retained_json(broker, "homeassistant/select/harmony-test_activity/config")
+            check(sel is not None and sel.get("unique_id") == "harmony-test_activity" and sel.get("state_topic") == BASE + "/activity_state"
+                  and sel.get("command_topic") == BASE + "/activity/set" and sel.get("options") == ["PowerOff", "Watch TV", "Media Player"]
+                  and "'10': 'Watch TV'" in sel.get("value_template", "") and "value_json.activity" in sel.get("value_template", ""),
+                  "select Activity: v2 state topic, alias command topic, id to name template", str(sel)[:300])
+            dev = (sel or {}).get("device", {})
+            check(dev.get("identifiers") == ["harmony-test", "harmony-ng-" + UNIT_ID] and dev.get("name") == "Test Hub"
+                  and dev.get("manufacturer") == "Logitech" and dev.get("configuration_url", "").endswith(":8089/"),
+                  "device object: old identifier kept, hub id added", str(dev))
+            check(sel is not None and sel.get("availability_topic") == BASE + "/status", "availability on <base>/status")
+            aid = retained_json(broker, "homeassistant/sensor/harmony-test_activity_id/config")
+            check(aid is not None and aid.get("state_topic") == BASE + "/activity_state" and aid.get("value_template") == "{{ value_json.activity }}",
+                  "sensor Activity ID reads activity_state", str(aid)[:200])
+            for obj, key in (("ip", "ip"), ("firmware", "version"), ("ir_devices", "device_count"), ("ir_commands", "command_count")):
+                c = retained_json(broker, "homeassistant/sensor/harmony-test_%s/config" % obj)
+                check(c is not None and c.get("state_topic") == BASE + "/hub" and ("value_json.%s" % key) in c.get("value_template", ""),
+                      "sensor %s reads hub.%s" % (obj, key), str(c)[:200])
+            po = retained_json(broker, "homeassistant/button/harmony-test_power_off/config")
+            check(po is not None and po.get("command_topic") == BASE + "/activity/set" and po.get("payload_press") == "PowerOff", "button Power Off", str(po)[:200])
+            sy = retained_json(broker, "homeassistant/button/harmony-test_sync/config")
+            check(sy is not None and sy.get("command_topic") == BASE + "/sync", "button Sync", str(sy)[:200])
+            sl = retained_json(broker, "homeassistant/button/harmony-test_remote_2_sleep/config")
+            check(sl is not None and sl.get("command_topic") == BASE + "/remote/2/sleep", "button Remote 2 Sleep", str(sl)[:200])
+            # the birth message republishes the configs
+            n_before = len([1 for (t, p, rt, q) in broker.log if t == "homeassistant/select/harmony-test_activity/config" and p])
+            birth = MockClient("127.0.0.1", broker.port, "ha-birth")
+            birth.publish("homeassistant/status", "online", retain=False, qos=0)
+            m = sub.wait_for("homeassistant/select/harmony-test_activity/config", 5)
+            n_after = len([1 for (t, p, rt, q) in broker.log if t == "homeassistant/select/harmony-test_activity/config" and p])
+            check(m is not None and n_after > n_before, "HA birth message: discovery republished", "%d -> %d" % (n_before, n_after))
+            birth.close()
 
             print("[-] 5.2 events: activity switch, bt and rf pushes")
             sub.drain()
@@ -199,6 +231,55 @@ def main():
             r = jload(m[1]) if m else {}
             check(m is not None and r.get("ok") is False and r.get("code") == 503, "rf_wake without hub_rf: 503", str(r))
 
+            print("[-] 5.3 aliases of the first MQTT layer")
+            sub.drain()
+            cmd.publish(BASE + "/activity/set", "Watch TV", qos=1)
+            m = sub.wait_for(BASE + "/activity_state", 10, lambda p: (jload(p) or {}).get("state") == 2 and (jload(p) or {}).get("activity") == "10")
+            check(m is not None, "activity/set with a name starts the activity", str(m))
+            cmd.publish(BASE + "/activity/set", "PowerOff", qos=1)
+            m = sub.wait_for(BASE + "/activity_state", 10, lambda p: (jload(p) or {}).get("state") == 0)
+            check(m is not None, "activity/set PowerOff powers off")
+            cmd.publish(BASE + "/activity/set", "11", qos=1)
+            m = sub.wait_for(BASE + "/activity_state", 10, lambda p: (jload(p) or {}).get("state") == 2 and (jload(p) or {}).get("activity") == "11")
+            check(m is not None, "activity/set with an id starts the activity")
+            cmd.publish(BASE + "/activity/set", "-1", qos=1)
+            sub.wait_for(BASE + "/activity_state", 10, lambda p: (jload(p) or {}).get("state") == 0)
+            st, a = hub.http_get("/api/test/ir-raw-last")
+            sub.drain()
+            cmd.publish(BASE + "/send_command", json.dumps({"device": "Living Room TV", "command": "VolumeUp"}), qos=1)
+            cmd.publish(BASE + "/command/1/VolumeDown", "1", qos=1)
+            time.sleep(1.0)
+            st, s_after = hub.http_get("/api/status")
+            check(st == 200, "send_command and command/<dev>/<cmd> accepted (daemon alive)")
+            sub.drain()
+            cmd.publish(BASE + "/sync", "PRESS", qos=1)
+            m = sub.wait_for(BASE + "/inventory/index", 5)
+            m2 = sub.wait_for("homeassistant/select/harmony-test_activity/config", 5)
+            check(m is not None and m2 is not None, "sync republishes the retained state and the discovery")
+            cmd.publish(BASE + "/remote/1/sleep", "PRESS", qos=1)
+            time.sleep(0.5)
+            st, s_after = hub.http_get("/api/status")
+            check(st == 200, "remote/1/sleep accepted without hub_rf (no reply, daemon alive)")
+
+            print("[-] 5.6 MQTT-type devices: pulse on the device topic")
+            sub.drain()
+            st, r = hub.http_post("/api/device-mqtt-test", {"deviceId": "1", "device": "Living Room TV", "command": "PowerToggle",
+                                                            "topic": "{base_topic}/button/{device}/{command}", "pulseMs": 300})
+            check(st == 200 and r.get("ok") is True and r.get("topic") == BASE + "/button/Living Room TV/PowerToggle" and r.get("pulseMs") == 300,
+                  "device-mqtt-test resolves the template", str(r))
+            m = sub.wait_for(BASE + "/button/Living Room TV/PowerToggle", 5, lambda p: p == b"1")
+            m0 = sub.wait_for(BASE + "/button/Living Room TV/PowerToggle", 5, lambda p: p == b"0")
+            check(m is not None and m0 is not None, "pulse published: 1 then 0", str((m, m0)))
+            st, r = hub.http_post("/api/device-save", {"deviceId": "3", "name": "Plug", "type": "MQTT", "mqttTopic": "/plug/{command}", "mqttPulseMs": 200})
+            check(st == 200, "an MQTT device is saved with its topic", str(r))
+            sub.drain()
+            st, r = hub.http_post("/api/ir-send", {"deviceId": "3", "command": "PowerOn"})
+            m = sub.wait_for(BASE + "/plug/PowerOn", 5, lambda p: p == b"1")
+            m0 = sub.wait_for(BASE + "/plug/PowerOn", 5, lambda p: p == b"0")
+            mb = sub.wait_for(BASE + "/button", 5)
+            check(m is not None and m0 is not None, "a command to an MQTT device pulses its own topic", str((st, r)))
+            check(mb is not None and jload(mb[1]).get("deviceId") == "3", "and raises the button event", str(mb))
+
             print("[-] 5.3 ir/raw")
             st, a = hub.http_get("/api/test/ir-raw-last")
             calls_before = a.get("calls", 0)
@@ -218,12 +299,18 @@ def main():
             check(s.get("v2") is True and s.get("connected") is True, "GET /api/mqtt-status: v2 and connected", str(s))
             st, s = hub.http_get("/api/status")
             check(s.get("mqtt", {}).get("v2") is True and "mqtt_v2" in s.get("capabilities", []), "status: mqtt.v2 and the capability")
-            # settings save drops the legacy fields
-            st, s = hub.http_post("/api/mqtt-save", {"baseTopic": BASE, "slot1RemoteEvents": False, "haDiscovery": True})
+            # settings save keeps the discovery fields and drops the per-remote ones
+            sub2 = MockClient("127.0.0.1", broker.port, "observer2")
+            sub2.subscribe("homeassistant/#")
+            st, s = hub.http_post("/api/mqtt-save", {"baseTopic": BASE, "slot1RemoteEvents": False, "haDiscovery": False, "discoveryPrefix": "homeassistant"})
             with open(os.path.join(hub.data_dir, "mqtt.json")) as f:
                 saved = json.load(f)
-            check(st == 200 and "slot1RemoteEvents" not in saved and "haDiscovery" not in saved and saved.get("baseTopic") == BASE,
-                  "mqtt-save drops the legacy fields", str(saved))
+            check(st == 200 and "slot1RemoteEvents" not in saved and saved.get("haDiscovery") is False and saved.get("discoveryPrefix") == "homeassistant"
+                  and saved.get("baseTopic") == BASE, "mqtt-save keeps haDiscovery and discoveryPrefix, drops the per-remote fields", str(saved))
+            m = sub2.wait_for("homeassistant/select/harmony-test_activity/config", 10, lambda p: p == b"")
+            check(m is not None and broker.retained.get("homeassistant/select/harmony-test_activity/config", b"") == b"",
+                  "discovery off: the configs are cleared on reconnect", str(m))
+            sub2.close()
     finally:
         for p in (BT_STATUS_FILE, BT_STATUS_FILE + ".tmp", mfg_path):
             try:

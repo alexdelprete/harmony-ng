@@ -2740,9 +2740,11 @@ paths:
         - Network & MQTT
       summary: Save the MQTT broker settings (v2)
       description: |
-        Also available as POST /mqtt. Fields of the old MQTT layer (discoveryPrefix, haDiscovery,
-        name, keepAlive, the per-remote event topics) are ignored and removed from the stored
-        file. The client reconnects after a save. Topics and the command channel: docs/API.md 8.1.
+        Also available as POST /mqtt. haDiscovery (default true) and discoveryPrefix control the
+        Home Assistant discovery entities. Fields of the old MQTT layer with no v2 equivalent
+        (name, keepAlive, the per-remote event topics) are ignored and removed from the stored
+        file. The client reconnects after a save. Topics, the command channel, the kept inbound
+        topics, MQTT-type devices and the discovery entities: docs/API.md 8.1.
       requestBody:
         required: true
         content:
@@ -2757,6 +2759,8 @@ paths:
                 password: {type: string, description: "kept when absent or empty"}
                 baseTopic: {type: string, default: harmony/hub}
                 clientId: {type: string}
+                discoveryPrefix: {type: string, default: homeassistant}
+                haDiscovery: {type: boolean, default: true, description: "publish the Home Assistant discovery entities; off clears them"}
             example:
               enabled: true
               host: 192.168.1.50
@@ -2765,6 +2769,8 @@ paths:
               password: secret
               baseTopic: harmony/hub
               clientId: harmony_hub
+              discoveryPrefix: homeassistant
+              haDiscovery: true
       responses:
         '200':
           description: Saved
@@ -2773,6 +2779,46 @@ paths:
               example:
                 ok: true
                 message: MQTT settings saved
+
+  /api/device-mqtt-test:
+    post:
+      tags:
+        - Devices
+      summary: Publish the MQTT pulse of a device once
+      description: |
+        "1" on the resolved topic, then "0" after the pulse, the way a command to an MQTT-type
+        device does (docs/API.md 3.8 and 8.1). topic and pulseMs override the device's mqttTopic
+        and mqttPulseMs; command defaults to PowerToggle.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                deviceId: {type: string}
+                device: {type: string, description: "device name, used for {device} in the template"}
+                command: {type: string, default: PowerToggle}
+                topic: {type: string, description: "template with {base_topic}, {device}, {command}"}
+                pulseMs: {type: integer, default: 1000}
+            example:
+              deviceId: "3"
+              device: Plug
+              command: PowerToggle
+              topic: "{base_topic}/button/{device}/{command}"
+              pulseMs: 1000
+      responses:
+        '200':
+          description: Published
+          content:
+            application/json:
+              example:
+                ok: true
+                topic: harmony/hub/button/Plug/PowerToggle
+                pulseMs: 1000
+                message: MQTT test publish sent
+        '503':
+          description: MQTT disabled or the broker not connected
 
   /api/wifi-scan:
     get:
