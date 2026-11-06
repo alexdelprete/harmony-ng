@@ -93,6 +93,7 @@ python3 "$SCRIPT_DIR/test_ws_events.py"
 python3 "$SCRIPT_DIR/test_status.py"
 python3 "$SCRIPT_DIR/test_ws_auth.py"
 python3 "$SCRIPT_DIR/test_ws_keepalive.py"
+python3 "$SCRIPT_DIR/test_ir_raw.py"
 
 # 6. Run OpenAPI Specification Contract Validation
 echo "[-] Running OpenAPI Specification Test Suite..."

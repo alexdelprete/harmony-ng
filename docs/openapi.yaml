@@ -1476,6 +1476,54 @@ paths:
               example:
                 ok: true
 
+  /api/ir-raw:
+    post:
+      tags:
+        - Hardware & IR
+      summary: Send a raw infrared frame (carrier + microsecond timings)
+      description: |
+        Timings are either signed (positive mark, negative space, alternating) or all positive
+        alternating mark/space starting with a mark. Capability flag ir_raw.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [timings]
+              properties:
+                frequency: {type: integer, default: 38000, description: "Carrier in Hz: 0 (unmodulated) or 20000 to 60000"}
+                timings:
+                  type: array
+                  minItems: 2
+                  maxItems: 2048
+                  items: {type: integer, minimum: -65535, maximum: 65535}
+                port: {type: integer, minimum: 1, maximum: 7, default: 7}
+                repeats: {type: integer, minimum: 1, maximum: 10, default: 1}
+            example:
+              frequency: 38000
+              timings: [9000, -4500, 560, -560, 560, -1690]
+              port: 1
+              repeats: 1
+      responses:
+        '200':
+          description: Frame sent
+          content:
+            application/json:
+              example:
+                ok: true
+                count: 6
+                duration_ms: 17
+        '400':
+          description: Validation error, the error names the field
+        '409':
+          description: Another IR transmission is in progress
+          content:
+            application/json:
+              example:
+                ok: false
+                error: busy
+
   /api/pronto-blast:
     post:
       tags:

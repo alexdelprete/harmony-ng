@@ -651,6 +651,27 @@ a device command; other callers may keep posting the key as `command`.
 
 ---
 
+### 5.4 Raw Infrared
+#### `POST /api/ir-raw`
+Sends a raw infrared frame given as carrier and microsecond timings (what an IR receiver or
+Home Assistant's `infrared` platform produces). Capability flag: `ir_raw`.
+- **Request Body** (`Content-Type: application/json`, up to 2048 timings):
+  ```json
+  {"frequency": 38000, "timings": [9000, -4500, 560, -560, 560, -1690], "port": 1, "repeats": 1}
+  ```
+  - `frequency`: carrier in Hz, `0` for unmodulated, otherwise 20000 to 60000. Default 38000.
+  - `timings`: microseconds, 2 to 2048 values, each 1 to 65535 in absolute value. Either signed
+    (positive mark, negative space, alternating) or all positive alternating mark/space starting
+    with a mark.
+  - `port`: bitmask as `/api/ir-send` (`1` front blaster, `2` jack 1, `4` jack 2, `7` all). Default 7.
+  - `repeats`: 1 to 10, default 1.
+- **Response `200 OK`**: `{"ok": true, "count": 6, "duration_ms": 17}` (`duration_ms` = sum of the
+  timings times `repeats`).
+- **Error `400`**: `{"ok": false, "error": "<field>: ..."}` naming the offending field.
+- **Error `409`**: `{"ok": false, "error": "busy"}` while another IR transmission holds the I2S
+  blaster (the same lock the orchestrator and `/api/ir-send` take).
+- Nothing of the frame is logged.
+
 ## 6. Bluetooth Stack & HID
 
 ### 6.1 Bluetooth Status

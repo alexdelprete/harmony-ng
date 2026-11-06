@@ -691,6 +691,7 @@ int http_auth_is_user_role_permitted(const char *method, const char *clean_path)
             strcmp(clean_path, "/api/activity-cancel") == 0 ||
             strcmp(clean_path, "/api/activity-progress") == 0 ||
             strcmp(clean_path, "/api/ir-send") == 0 ||
+            strcmp(clean_path, "/api/ir-raw") == 0 ||
             strcmp(clean_path, "/ir/send") == 0 ||
             strcmp(clean_path, "/api/button-press") == 0 ||
             strcmp(clean_path, "/api/bt-saved-command") == 0 ||
