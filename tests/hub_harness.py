@@ -10,6 +10,7 @@ test_status.py and record_fixtures.py. Pure stdlib.
 """
 
 import base64
+import http.client
 import json
 import os
 import shutil
@@ -20,8 +21,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.error
-import urllib.request
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.abspath(os.path.join(TESTS_DIR, ".."))
@@ -78,8 +77,11 @@ class HubHarness:
     """A hub_daemon_test on its own mock root. Use as a context manager."""
 
     def __init__(self, port=8997, hub_bin=None, env=None, args=None, config_dir=SAMPLE_CONFIG,
-                 log_path=None):
+                 log_path=None, host="127.0.0.1", extra_config_files=None):
         self.port = port
+        # 127.0.0.2 is not trusted as loopback by http_auth, so auth tests use it
+        self.host = host
+        self.extra_config_files = dict(extra_config_files or {})
         self.hub_bin = hub_bin or HUB_BIN
         self.extra_env = dict(env or {})
         self.extra_args = list(args or [])
@@ -91,7 +93,7 @@ class HubHarness:
 
     @property
     def base_url(self):
-        return "http://127.0.0.1:%d" % self.port
+        return "http://%s:%d" % (self.host, self.port)
 
     @property
     def data_dir(self):
@@ -121,6 +123,9 @@ class HubHarness:
             src = os.path.join(self.config_dir, name)
             if os.path.exists(src):
                 shutil.copy(src, os.path.join(self.data_dir, name))
+        for name, content in self.extra_config_files.items():
+            with open(os.path.join(cfg, name), "w") as f:
+                f.write(content if isinstance(content, str) else json.dumps(content))
         env = os.environ.copy()
         env["HARMONY_MOCK_DIR"] = self.mock_dir
         env["HARMONY_MOCK_ROLE"] = "hub"
@@ -157,34 +162,36 @@ class HubHarness:
         self.mock_dir = None
 
     def http_get(self, path, headers=None, timeout=3.0):
-        req = urllib.request.Request(self.base_url + path, headers=headers or {})
-        return _http(req, timeout)
+        return _http(self.host, self.port, "GET", path, None, headers or {}, timeout)
 
     def http_post(self, path, payload, headers=None, timeout=3.0, raw=None):
         data = raw if raw is not None else json.dumps(payload).encode("utf-8")
         hdrs = {"Content-Type": "application/json"}
         hdrs.update(headers or {})
-        req = urllib.request.Request(self.base_url + path, data=data, headers=hdrs, method="POST")
-        return _http(req, timeout)
+        return _http(self.host, self.port, "POST", path, data, hdrs, timeout)
 
     def ws(self, path="/ws", headers=None, timeout=5.0):
-        return WsClient("127.0.0.1", self.port, path, headers=headers, timeout=timeout)
+        return WsClient(self.host, self.port, path, headers=headers, timeout=timeout)
 
 
-def _http(req, timeout):
+def source_address_for(host):
+    """Connecting to 127.0.0.2 from the default source gives the peer 127.0.0.1, which the
+    daemon trusts as loopback: bind the client to the same address to be seen as 127.0.0.2."""
+    return (host, 0) if host != "127.0.0.1" else None
+
+
+def _http(host, port, method, path, data, headers, timeout):
+    """(status, parsed JSON or text); status 0 on a connection error"""
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            body = r.read().decode("utf-8", "replace")
-            try:
-                return r.status, json.loads(body)
-            except ValueError:
-                return r.status, body
-    except urllib.error.HTTPError as e:
-        body = e.read().decode("utf-8", "replace")
+        conn = http.client.HTTPConnection(host, port, timeout=timeout, source_address=source_address_for(host))
+        conn.request(method, path, body=data, headers=headers)
+        r = conn.getresponse()
+        body = r.read().decode("utf-8", "replace")
+        conn.close()
         try:
-            return e.code, json.loads(body)
+            return r.status, json.loads(body)
         except ValueError:
-            return e.code, body
+            return r.status, body
     except Exception as e:
         return 0, str(e)
 
@@ -200,7 +207,7 @@ class WsClient:
     """Minimal RFC 6455 client: text frames, ping/pong, close. Client frames are masked."""
 
     def __init__(self, host, port, path="/ws", headers=None, timeout=5.0):
-        self.sock = socket.create_connection((host, port), timeout=timeout)
+        self.sock = socket.create_connection((host, port), timeout=timeout, source_address=source_address_for(host))
         self.timeout = timeout
         self.buf = b""
         key = base64.b64encode(os.urandom(16)).decode("ascii")

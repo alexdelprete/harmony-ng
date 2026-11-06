@@ -50,6 +50,11 @@ int ws_send_pong(int client_fd);
 /* Remove client upon disconnect */
 void ws_remove_client(int client_fd);
 
+/* Role of the token the client upgraded with (values of enum http_role: 0 none, 1 user,
+ * 2 admin). Unknown clients and clients upgraded without auth count as admin. */
+void ws_set_client_role(int client_fd, int role);
+int ws_get_client_role(int client_fd);
+
 /* Close all connected clients */
 void ws_close_all(void);
 

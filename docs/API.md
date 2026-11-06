@@ -1309,6 +1309,22 @@ curl -X DELETE -H "Authorization: Bearer hht_..." "http://192.168.1.1:8089/api/a
 ```
 
 ### 11.4 WebSocket Token Authentication
-Connect with token in query string:
-`ws://192.168.1.1:8089/?token=pat_3f8a9b...`
+When authentication is enabled, the WebSocket upgrade (`GET /ws`) must carry a token: either
+`Authorization: Bearer <token>` or, since browsers cannot set headers on a WebSocket, `?token=<token>`
+in the request line:
+`ws://192.168.1.1:8089/ws?token=pat_3f8a9b...`
+
+- Personal access tokens (`pat_...`, 11.3) and session tokens (`hht_...`, 11.2) are both accepted.
+  Digest and Basic credentials are not supported on the upgrade.
+- Missing, unknown or revoked token: `401 Unauthorized` with the usual challenge; the connection is
+  closed, never upgraded. Callers on the Hub itself (`127.0.0.1`, `::1`: `hub_rf`, `hub_btstack`)
+  need no token, as for every request. With authentication disabled nothing changes.
+- The role of the token is kept for the connection. A `user` role receives every pushed message
+  and may send `ping`, `get_state` and `get_snapshot`; its command actions follow the same
+  permission table as the REST equivalents (`send_command` = `/api/ir-send`, `start_activity` =
+  `/api/activity`, `stop_activity` = `/api/poweroff`, `cancel_activity` = `/api/activity-cancel`,
+  `bt_key`, `bt_text`, `bt_mouse` = their endpoints). A refused action is answered with
+  `{"type": "ack", "action": ..., "ok": false, "error": "Forbidden: Admin access required"}`.
+- Both web UIs pass their session token as `?token=` when they open the WebSocket.
+- Capability flag: `ws_auth`.
 

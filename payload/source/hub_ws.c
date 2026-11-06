@@ -2,6 +2,7 @@
 #include "hub_ws.h"
 #include "ws_server.h"
 #include "hub_events.h"
+#include "http_auth.h"
 #include "hub_mqtt.h"
 #include "orchestrator.h"
 #include "hw_action.h"
@@ -82,6 +83,35 @@ void handle_ws_client_message(int cfd) {
 
     cJSON *id_j = cJSON_GetObjectItemCaseSensitive(root, "msgId");
     int msg_id = (id_j && cJSON_IsNumber(id_j)) ? id_j->valueint : 0;
+
+    /* A user-role token follows the permission table of the REST equivalents; ping and the
+     * state queries are always allowed */
+    if (ws_get_client_role(cfd) == (int)ROLE_USER) {
+        const char *rest_path = NULL;
+        if (strcmp(action, "send_command") == 0 || strcmp(action, "ir_send") == 0) rest_path = "/api/ir-send";
+        else if (strcmp(action, "start_activity") == 0) rest_path = "/api/activity";
+        else if (strcmp(action, "stop_activity") == 0 || strcmp(action, "power_off") == 0) rest_path = "/api/poweroff";
+        else if (strcmp(action, "cancel_activity") == 0 || strcmp(action, "reset_interlock") == 0) rest_path = "/api/activity-cancel";
+        else if (strcmp(action, "bt_key") == 0) rest_path = "/api/bt-key";
+        else if (strcmp(action, "bt_text") == 0) rest_path = "/api/bt-text";
+        else if (strcmp(action, "bt_mouse") == 0) rest_path = "/api/bt-mouse";
+        if (rest_path && !http_auth_is_user_role_permitted("POST", rest_path)) {
+            cJSON *resp = cJSON_CreateObject();
+            cJSON_AddStringToObject(resp, "type", "ack");
+            cJSON_AddStringToObject(resp, "action", action);
+            cJSON_AddBoolToObject(resp, "ok", 0);
+            cJSON_AddStringToObject(resp, "error", "Forbidden: Admin access required");
+            if (msg_id) cJSON_AddNumberToObject(resp, "msgId", msg_id);
+            char *str = cJSON_PrintUnformatted(resp);
+            cJSON_Delete(resp);
+            if (str) {
+                ws_send_text(cfd, str);
+                free(str);
+            }
+            cJSON_Delete(root);
+            return;
+        }
+    }
 
     if (strcmp(action, "ping") == 0) {
         cJSON *resp = cJSON_CreateObject();

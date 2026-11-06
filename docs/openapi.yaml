@@ -73,9 +73,22 @@ paths:
       description: |
         WebSocket connection for real-time activity transitions, IR/RF events, and hub telemetry.
         Requires upgrade headers `Connection: Upgrade` and `Upgrade: websocket`.
+        With authentication enabled the upgrade needs a PAT or session token, as
+        `Authorization: Bearer <token>` or `?token=<token>` in the request line (401 otherwise;
+        loopback callers are exempt). The token's role applies to the actions sent on the socket.
+        Pushed messages (type, seq, ts): activity_state, activity_progress, config_changed,
+        bt_status, rf_status, button; see docs/API.md section 10.
+      parameters:
+        - name: token
+          in: query
+          required: false
+          schema: {type: string}
+          description: PAT (pat_...) or session token (hht_...) when authentication is enabled
       responses:
         '101':
           description: Switching protocols to WebSocket
+        '401':
+          description: Authentication enabled and no valid token
 
   /api/status:
     get:

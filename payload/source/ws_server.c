@@ -13,6 +13,7 @@
 #define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 static int g_clients[WS_MAX_CLIENTS];
+static int g_client_roles[WS_MAX_CLIENTS];
 static size_t g_client_count = 0;
 /* Clients are added from HTTP worker threads, polled and removed by the main loop, and sent to
  * from the orchestrator, HTTP and state watcher threads: guard the list, and serialize frame
@@ -155,6 +156,7 @@ static int add_client(int fd) {
     for (size_t i = 0; i < WS_MAX_CLIENTS; i++) {
         if (g_clients[i] < 0) {
             g_clients[i] = fd;
+            g_client_roles[i] = 2; /* admin until the upgrade records the token's role */
             g_client_count++;
             rc = 0;
             break;
@@ -343,6 +345,30 @@ int ws_read_frame(int client_fd, char *out_buf, size_t max_len, int *out_opcode)
     }
 
     return (int)total;
+}
+
+void ws_set_client_role(int client_fd, int role) {
+    pthread_mutex_lock(&g_clients_lock);
+    for (size_t i = 0; i < WS_MAX_CLIENTS; i++) {
+        if (g_clients[i] == client_fd) {
+            g_client_roles[i] = role;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_clients_lock);
+}
+
+int ws_get_client_role(int client_fd) {
+    int role = 2;
+    pthread_mutex_lock(&g_clients_lock);
+    for (size_t i = 0; i < WS_MAX_CLIENTS; i++) {
+        if (g_clients[i] == client_fd) {
+            role = g_client_roles[i];
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_clients_lock);
+    return role;
 }
 
 int ws_get_clients(int *out_fds, size_t max_count) {
