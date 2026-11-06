@@ -68,11 +68,7 @@ export class HarmonyAppSettingsSystem extends HarmonyAppRemotesRf {
         document.getElementById('mqttPort').value = st.config.port || 1883;
         document.getElementById('mqttUsername').value = st.config.username || '';
         document.getElementById('mqttBaseTopic').value = st.config.baseTopic || 'harmony/hub';
-        document.getElementById('mqttDiscoveryPrefix').value = st.config.discoveryPrefix || 'homeassistant';
         document.getElementById('mqttClientId').value = st.config.clientId || 'harmony_hub';
-        document.getElementById('mqttName').value = st.config.name || 'Harmony Hub';
-        document.getElementById('mqttKeepAlive').value = st.config.keepAlive || 60;
-        document.getElementById('mqttHaDiscovery').checked = Boolean(st.config.haDiscovery);
       }
     } catch (err) {
       if (badge) badge.textContent = 'Offline';
@@ -345,11 +341,7 @@ export class HarmonyAppSettingsSystem extends HarmonyAppRemotesRf {
       password: document.getElementById('mqttPassword')?.value,
       keep_password: document.getElementById('mqttKeepPass')?.checked ? 1 : 0,
       baseTopic: document.getElementById('mqttBaseTopic')?.value.trim(),
-      discoveryPrefix: document.getElementById('mqttDiscoveryPrefix')?.value.trim(),
-      clientId: document.getElementById('mqttClientId')?.value.trim(),
-      name: document.getElementById('mqttName')?.value.trim(),
-      keepAlive: Number(document.getElementById('mqttKeepAlive')?.value) || 60,
-      haDiscovery: document.getElementById('mqttHaDiscovery')?.checked ? 1 : 0
+      clientId: document.getElementById('mqttClientId')?.value.trim()
     };
 
     try {

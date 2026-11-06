@@ -38,8 +38,6 @@ export function createDevicesApi(client) {
           powerOffSequence: dev.powerOffSequence || [],
           isBt,
           mqttEnabled: isMqtt || !!dev.mqttEnabled,
-          mqttTopic: dev.mqttTopic || '{base_topic}/button/{device}/{command}',
-          mqttPulseMs: Number(dev.mqttPulseMs !== undefined ? dev.mqttPulseMs : 1000),
           commands: rawCmds.map((c, idx) => {
             if (typeof c === 'string') return { name: c, keyCode: '', raw: '' };
             const kCode = c.keyCode || '';
@@ -139,11 +137,6 @@ export function createDevicesApi(client) {
 
     async saveDeviceMqtt(data) {
       return client.postForm('/ir/device-mqtt', data);
-    },
-
-    async testDeviceMqtt(params = {}) {
-      const data = typeof params === 'object' ? params : { deviceId: String(params) };
-      return client.postJson('/api/device-mqtt-test', data);
     },
 
     async deleteCommand(deviceId, command) {

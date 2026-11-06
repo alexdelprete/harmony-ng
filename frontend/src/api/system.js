@@ -98,19 +98,8 @@ export function createSystemApi(client) {
           port: data.port || cfg.port || 1883,
           username: data.username || cfg.username || '',
           baseTopic: data.baseTopic || cfg.baseTopic || 'harmony/hub',
-          discoveryPrefix: data.discoveryPrefix || cfg.discoveryPrefix || 'homeassistant',
           clientId: data.clientId || cfg.clientId || 'harmony_hub',
-          name: data.name || cfg.name || 'Harmony Hub',
-          keepAlive: data.keepAlive || cfg.keepAlive || 60,
-          haDiscovery: data.haDiscovery !== undefined ? Boolean(data.haDiscovery) : (cfg.haDiscovery !== undefined ? Boolean(cfg.haDiscovery) : true),
-          btRemoteEvents: Boolean(data.btRemoteEvents !== undefined ? data.btRemoteEvents : (cfg.btRemoteEvents !== undefined ? cfg.btRemoteEvents : false)),
-          btRemoteTopic: data.btRemoteTopic || cfg.btRemoteTopic || '',
-          slot1RemoteEvents: Boolean(data.slot1RemoteEvents !== undefined ? data.slot1RemoteEvents : (cfg.slot1RemoteEvents !== undefined ? cfg.slot1RemoteEvents : (data.eliteRemoteEvents !== undefined ? data.eliteRemoteEvents : true))),
-          slot1RemoteTopic: data.slot1RemoteTopic || cfg.slot1RemoteTopic || data.eliteRemoteTopic || cfg.eliteRemoteTopic || '',
-          slot2RemoteEvents: Boolean(data.slot2RemoteEvents !== undefined ? data.slot2RemoteEvents : (cfg.slot2RemoteEvents !== undefined ? cfg.slot2RemoteEvents : false)),
-          slot2RemoteTopic: data.slot2RemoteTopic || cfg.slot2RemoteTopic || '',
-          eliteRemoteEvents: Boolean(data.eliteRemoteEvents !== undefined ? data.eliteRemoteEvents : (cfg.eliteRemoteEvents !== undefined ? cfg.eliteRemoteEvents : true)),
-          eliteRemoteTopic: data.eliteRemoteTopic || cfg.eliteRemoteTopic || ''
+          v2: Boolean(data.v2)
         }
       };
     },

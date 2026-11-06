@@ -364,29 +364,6 @@ export class HarmonyAppDevicesIrdb extends HarmonyAppDevicesStudio {
           </div>
         </div>
 
-        <div class="card" style="margin-bottom: 12px;">
-          <h3 style="font-size: 15px; margin-bottom: 8px;">${t('mqtt_conn_card', 'MQTT Connection')}</h3>
-          <label style="display: flex; align-items: center; gap: 6px;">
-            <input type="checkbox" id="mgrDevMqttEnabled" ${dev.mqttEnabled ? 'checked' : ''}>
-            <span>${t('publish_presses_mqtt')}</span>
-          </label>
-          <div class="row" style="margin-top: 8px;">
-            <div>
-              <label>${t('topic_template_lbl', 'Topic Template')}</label>
-              <input id="mgrDevMqttTopic" class="form-control" value="${dev.mqttTopic || '{root}/button/{device}/{command}'}">
-              <div style="display:flex; gap:4px; margin-top:4px; flex-wrap:wrap;">
-                <button type="button" class="btn btn-xs btn-ghost btn-insert-token" data-token="{root}">{root}</button>
-                <button type="button" class="btn btn-xs btn-ghost btn-insert-token" data-token="{device}">{device}</button>
-                <button type="button" class="btn btn-xs btn-ghost btn-insert-token" data-token="{command}">{command}</button>
-                <button type="button" class="btn btn-xs btn-ghost btn-insert-token" data-token="{state}">{state}</button>
-              </div>
-            </div>
-            <div><label>Pulse (ms)</label><input id="mgrDevMqttPulse" type="number" class="form-control" value="${dev.mqttPulseMs || 1000}"></div>
-          </div>
-          <div class="actions" style="margin-top: 12px; display: flex; gap: 8px;">
-            <button type="button" id="btnMgrSaveMqtt" class="btn btn-sm btn-secondary">${t('save_mqtt_btn', 'Save MQTT')}</button>
-            <button type="button" id="btnMgrTestMqtt" class="btn btn-sm btn-ghost">${t('test_pulse_btn', 'Test Pulse')}</button>
-          </div>
         </div>
 
         <div class="card">
@@ -447,31 +424,6 @@ export class HarmonyAppDevicesIrdb extends HarmonyAppDevicesStudio {
         alert(t("power_saved"));
         await this.refreshData();
         this.populateManageDevices(dev.id);
-      });
-
-      editor.querySelector('#btnMgrSaveMqtt')?.addEventListener('click', async () => {
-        await this.client.saveDeviceMqtt({
-          deviceId: dev.id,
-          mqttEnabled: editor.querySelector('#mgrDevMqttEnabled').checked ? 1 : 0,
-          mqttTopic: editor.querySelector('#mgrDevMqttTopic').value,
-          mqttPulseMs: Number(editor.querySelector('#mgrDevMqttPulse').value) || 1000
-        });
-        alert(t("mqtt_saved"));
-        await this.refreshData();
-        this.populateManageDevices(dev.id);
-      });
-
-      editor.querySelector('#btnMgrTestMqtt')?.addEventListener('click', async () => {
-        const mgrTopic = editor.querySelector('#mgrDevMqttTopic')?.value?.trim();
-        const mgrPulse = Number(editor.querySelector('#mgrDevMqttPulse')?.value) || 1000;
-        await this.client.testDeviceMqtt({
-          deviceId: dev.id,
-          device: dev.name || dev.id,
-          command: 'PowerToggle',
-          topic: mgrTopic,
-          pulseMs: mgrPulse
-        });
-        alert(t("test_mqtt_pulse_sent"));
       });
 
       const renderCmds = (filter = '') => {
