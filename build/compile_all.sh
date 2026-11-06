@@ -101,6 +101,8 @@ build_daemon() {
         payload/source/ws_server.c \
         payload/source/state_watch.c \
         payload/source/hub_events.c \
+        payload/source/hub_info.c \
+        payload/source/mfg_id.c \
         payload/source/mqtt_client.c \
         payload/source/sha256.c \
         payload/source/timezone_db.c \

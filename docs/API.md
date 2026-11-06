@@ -19,13 +19,20 @@ Returns service status.
 
 ### 1.2 Full Hub Status
 #### `GET /api/status`
-Returns high-level hub status, firmware, active activity, memory, uptime, and MQTT connection status.
+Returns high-level hub status, firmware, identity, active activity, memory, uptime, and MQTT connection status.
 - **Response `200 OK`**:
   ```json
   {
     "ok": true,
     "hub_name": "Living Room Hub",
     "firmware": "4.15.600",
+    "hub_id": "20140101120000-000001",
+    "version": "2.2.0",
+    "commit": "abc1234",
+    "api_version": 2,
+    "capabilities": ["events", "snapshot", "ws_auth", "ws_keepalive", "ir_raw", "rf_wake"],
+    "legacy_enabled": false,
+    "mdns_enabled": false,
     "activity": "123456",
     "state": 2,
     "busy": false,
@@ -41,6 +48,17 @@ Returns high-level hub status, firmware, active activity, memory, uptime, and MQ
     }
   }
   ```
+  - `firmware`: the Logitech base firmware. `version` and `commit`: this firmware, as in `/api/system-info`.
+  - `hub_id`: the factory unit id from the `mfg` partition (unique per unit, survives reflashes); the
+    identifier for device registries and unique ids. Falls back to the Wi-Fi MAC (12 lowercase hex
+    characters, logged as a warning) only when the partition has no unit id.
+  - `api_version`: `2` from milestone 1 of the integration work on; it changes only on a breaking
+    change to an existing endpoint or message. Additions are announced through `capabilities`.
+  - `capabilities`: flags of the features compiled into this firmware, independent of settings:
+    `events` (event bus, pushed WebSocket messages 10.8 to 10.13), `snapshot` (10.14), `ws_auth`
+    (11.4), `ws_keepalive` (10.15), `ir_raw` (5.4), `rf_wake` (`POST /api/rf/wake`).
+  - `legacy_enabled`, `mdns_enabled`: mirror the settings of the Logitech protocol shim and the mDNS
+    responder; `false` while those features do not exist.
 
 ### 1.3 System Info
 #### `GET /api/system-info`

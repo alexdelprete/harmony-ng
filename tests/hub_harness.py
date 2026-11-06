@@ -40,7 +40,7 @@ HUB_DAEMON_SOURCES = [
     "config_store.c", "bt_migrate.c", "config_sanitize.c", "orchestrator.c",
     "orchestrator_queue.c", "hub_mqtt.c", "hub_mqtt_ha.c", "hub_ws.c", "hub_ntp.c",
     "resource_cache.c", "cJSON.c", "ir_encoder.c", "ir_i2s.c", "hw_action.c",
-    "ws_server.c", "state_watch.c", "hub_events.c", "mqtt_client.c", "sha256.c",
+    "ws_server.c", "state_watch.c", "hub_events.c", "hub_info.c", "mfg_id.c", "mqtt_client.c", "sha256.c",
     "timezone_db.c",
 ]
 
