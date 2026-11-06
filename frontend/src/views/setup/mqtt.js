@@ -3,6 +3,7 @@ import { h } from '../../utils/dom.js';
 import { api } from '../../api/index.js';
 import { t } from '../../i18n/index.js';
 import { toast } from '../../components/toast.js';
+import { store } from '../../store.js';
 
 export function createView() {
   const container = h('div', { className: 'setup-subview-mqtt', style: { display: 'flex', flexDirection: 'column', gap: '16px' } });
@@ -494,6 +495,14 @@ export function createView() {
   container.appendChild(builderCard);
   loadMqtt();
   loadInventory();
+  /* pushed by the Hub on connect, loss and settings changes: update the badge only */
+  const off = store.on('mqttStatus', (st) => {
+    if (!container.isConnected) { off(); return; }
+    const badge = container.querySelector('#mqtt-status-badge');
+    if (!badge || !st) return;
+    badge.className = st.connected ? 'badge badge-success' : 'badge badge-danger';
+    badge.textContent = st.connected ? 'Connected' : (st.enabled ? 'Disconnected' : 'Disabled');
+  });
   return container;
 }
 

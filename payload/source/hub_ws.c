@@ -83,6 +83,9 @@ cJSON *hub_ws_snapshot_object(int msg_id) {
     const cJSON *rf = hub_events_last(HUB_EV_RF_STATUS);
     if (rf) cJSON_AddItemToObject(root, "rf_status", cJSON_Duplicate(rf, 1));
     else cJSON_AddNullToObject(root, "rf_status");
+    const cJSON *mq = hub_events_last(HUB_EV_MQTT_STATUS);
+    if (mq) cJSON_AddItemToObject(root, "mqtt_status", cJSON_Duplicate(mq, 1));
+    else cJSON_AddNullToObject(root, "mqtt_status");
 
     cJSON *cfg = cJSON_CreateObject();
     cJSON *files = state_watch_config_mtimes();

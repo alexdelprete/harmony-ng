@@ -909,10 +909,25 @@ static void mqtt_event_sink(const hub_event_t *ev, void *user) {
     }
 }
 
+/* mqtt_status on the bus (WebSocket clients, the snapshot): enabled, connected, broker, port,
+ * base topic and discovery flag. Emitted at start, on connect, on loss and after a settings save. */
+static void emit_mqtt_status(void) {
+    cJSON *o = cJSON_CreateObject();
+    if (!o) return;
+    cJSON_AddBoolToObject(o, "enabled", g_mqtt_enabled);
+    cJSON_AddBoolToObject(o, "connected", g_mqtt_enabled && mqtt_is_connected());
+    cJSON_AddStringToObject(o, "broker", g_mqtt_enabled ? g_mqtt_host : "");
+    cJSON_AddNumberToObject(o, "port", g_mqtt_port);
+    cJSON_AddStringToObject(o, "baseTopic", g_mqtt_base_topic);
+    cJSON_AddBoolToObject(o, "haDiscovery", g_mqtt_ha_discovery);
+    hub_events_emit(HUB_EV_MQTT_STATUS, o);
+}
+
 int hub_mqtt_init(void) {
     hub_events_subscribe(mqtt_event_sink, NULL);
     hw_set_mqtt_button_handler(daemon_mqtt_button_handler);
     g_mqtt_enabled = load_mqtt_config();
+    emit_mqtt_status();
     if (!g_mqtt_enabled) {
         printf("[*] MQTT disabled or config missing\n");
         return 0;
@@ -937,6 +952,7 @@ void daemon_sync_mqtt(void) {
     g_inv_pub_count = 0;
     g_inventory_version[0] = '\0';
     g_last_config_payload[0] = '\0';
+    emit_mqtt_status();
     if (!g_mqtt_enabled) return;
     mqtt_init(g_mqtt_host, g_mqtt_port, g_mqtt_cid, g_mqtt_user, g_mqtt_pass);
     mqtt_set_lwt(g_status_topic, "offline", 1);
@@ -954,6 +970,7 @@ void hub_mqtt_tick(void) {
             g_mqtt_retry_interval = 5;
             printf("[+] Connected to MQTT broker %s:%d\n", g_mqtt_host, g_mqtt_port);
             on_connected();
+            emit_mqtt_status();
         }
         mqtt_tick();
         pulse_tick();
@@ -962,6 +979,7 @@ void hub_mqtt_tick(void) {
         if (g_last_mqtt_connected) {
             g_last_mqtt_connected = 0;
             printf("[-] MQTT connection lost, will reconnect with backoff...\n");
+            emit_mqtt_status();
         }
         time_t now = time(NULL);
         if (now - g_last_mqtt_retry >= g_mqtt_retry_interval) {

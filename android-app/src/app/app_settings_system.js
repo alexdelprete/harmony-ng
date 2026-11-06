@@ -54,6 +54,13 @@ import {
 import { HarmonyAppRemotesRf } from './app_remotes_rf.js';
 
 export class HarmonyAppSettingsSystem extends HarmonyAppRemotesRf {
+  setMqttBadge(st) {
+    const badge = document.getElementById('mqttConnBadge');
+    if (!badge || !st) return;
+    badge.className = `badge ${st.connected ? 'ok' : 'bad'}`;
+    badge.textContent = st.connected ? 'Connected' : (st.enabled ? 'Disconnected' : 'Disabled');
+  }
+
   async loadMqttView() {
     const badge = document.getElementById('mqttConnBadge');
     try {
