@@ -52,6 +52,7 @@ import {
   getRawDeviceIconSvg
 } from './app_icons_ui.js';
 import { HarmonyAppRemotesRf } from './app_remotes_rf.js';
+import { copyText } from '../clipboard.js';
 
 export class HarmonyAppSettingsSystem extends HarmonyAppRemotesRf {
   setMqttBadge(st) {
@@ -282,7 +283,7 @@ export class HarmonyAppSettingsSystem extends HarmonyAppRemotesRf {
     if (!previewEl || !previewEl.textContent) return;
 
     try {
-      await navigator.clipboard.writeText(previewEl.textContent);
+      if (!(await copyText(previewEl.textContent))) throw new Error('clipboard unavailable');
       if (copyBtn) copyBtn.textContent = '✓ Copied!';
       if (statusEl) statusEl.innerHTML = '<span style="color:var(--success)">Copied to clipboard</span>';
       setTimeout(() => {
