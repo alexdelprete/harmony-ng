@@ -1408,9 +1408,18 @@ current activity, absent when the key was not mapped to a device command. Calls 
 }
 ```
 
+#### 10.13a MQTT Status
+The broker connection state, pushed when hub_daemon starts, when the client connects or loses the
+broker, and after `POST /api/mqtt-save`. `broker` is empty while MQTT is disabled. Both web UIs
+update the MQTT page's badge from it.
+```json
+{"type": "mqtt_status", "seq": 23, "ts": 1762387200, "enabled": true, "connected": true,
+ "broker": "192.168.1.50", "port": 1883, "baseTopic": "harmony/hub", "haDiscovery": true}
+```
+
 #### 10.14 Snapshot
 The first frame a client receives after the upgrade, and the reply to `get_snapshot` (10.8a).
-`activity_state`, `bt_status` and `rf_status` are the last payloads pushed for those types
+`activity_state`, `bt_status`, `rf_status` and `mqtt_status` are the last payloads pushed for those types
 (`null` before the first one; `activity_state` is built from the orchestrator if needed).
 `config.files` holds the mtimes (Unix seconds) the watcher tracks, so a client can tell whether its
 cached inventory is stale. `seq` is the bus sequence at the time of the snapshot: a client that
@@ -1426,6 +1435,7 @@ refetch over REST. The frame can exceed 4 KB (outbound frames may be up to 64 KB
   "activity_state": {"type": "activity_state", "activity": "-1", "state": 0, "stateName": "idle", "busy": false, "sending": false, "seq": 3, "ts": 1762387100},
   "bt_status": {"type": "bt_status", "seq": 20, "ts": 1762387200, "...": "..."},
   "rf_status": {"type": "rf_status", "seq": 21, "ts": 1762387200, "...": "..."},
+  "mqtt_status": {"type": "mqtt_status", "seq": 23, "ts": 1762387200, "enabled": true, "connected": true, "...": "..."},
   "config": {"files": {"devices": 1762387000, "activities": 1762387000, "settings": 1762380000, "remote_map": 1762387000}},
   "seq": 42,
   "ts": 1762387200

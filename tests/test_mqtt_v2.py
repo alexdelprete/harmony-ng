@@ -15,7 +15,7 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hub_harness import HubHarness  # noqa: E402
+from hub_harness import HubHarness, WsClient  # noqa: E402
 from mock_mqtt import MockBroker, MockClient  # noqa: E402
 
 PORT = 8989
@@ -80,6 +80,12 @@ def main():
                 time.sleep(0.1)
             r = broker.retained
             check(r.get(BASE + "/status") == b"online", "status online retained", str(r.get(BASE + "/status")))
+            ws = WsClient("127.0.0.1", PORT)
+            snap = ws.recv_json(timeout=5)
+            mst = (snap or {}).get("mqtt_status") or {}
+            check(mst.get("type") == "mqtt_status" and mst.get("connected") is True and mst.get("enabled") is True
+                  and mst.get("broker") == "127.0.0.1" and mst.get("baseTopic") == BASE,
+                  "snapshot carries mqtt_status connected", str(mst))
             hubo = retained_json(broker, BASE + "/hub")
             check(hubo is not None and hubo.get("type") == "hub" and hubo.get("hub_id") == UNIT_ID
                   and "mqtt_v2" in hubo.get("capabilities", []) and "ts" in hubo, "hub retained with hub_id and capabilities", str(hubo))
@@ -137,8 +143,10 @@ def main():
             # the birth message republishes the configs
             n_before = len([1 for (t, p, rt, q) in broker.log if t == "homeassistant/select/harmony-test_activity/config" and p])
             birth = MockClient("127.0.0.1", broker.port, "ha-birth")
+            sub.drain()  # the configs published at connect are still queued: wait for a new one
             birth.publish("homeassistant/status", "online", retain=False, qos=0)
             m = sub.wait_for("homeassistant/select/harmony-test_activity/config", 5)
+            time.sleep(0.2)
             n_after = len([1 for (t, p, rt, q) in broker.log if t == "homeassistant/select/harmony-test_activity/config" and p])
             check(m is not None and n_after > n_before, "HA birth message: discovery republished", "%d -> %d" % (n_before, n_after))
             birth.close()
@@ -301,12 +309,24 @@ def main():
             check(s.get("mqtt", {}).get("v2") is True and "mqtt_v2" in s.get("capabilities", []), "status: mqtt.v2 and the capability")
             # settings save keeps the discovery fields and drops the per-remote ones
             sub2 = MockClient("127.0.0.1", broker.port, "observer2")
+            ws_frames = []
             sub2.subscribe("homeassistant/#")
             st, s = hub.http_post("/api/mqtt-save", {"baseTopic": BASE, "slot1RemoteEvents": False, "haDiscovery": False, "discoveryPrefix": "homeassistant"})
             with open(os.path.join(hub.data_dir, "mqtt.json")) as f:
                 saved = json.load(f)
             check(st == 200 and "slot1RemoteEvents" not in saved and saved.get("haDiscovery") is False and saved.get("discoveryPrefix") == "homeassistant"
                   and saved.get("baseTopic") == BASE, "mqtt-save keeps haDiscovery and discoveryPrefix, drops the per-remote fields", str(saved))
+            deadline = time.time() + 10
+            while time.time() < deadline and not any(f.get("connected") for f in ws_frames):
+                try:
+                    f = ws.recv_json(timeout=1)
+                except Exception:
+                    continue
+                if f and f.get("type") == "mqtt_status":
+                    ws_frames.append(f)
+            check(len(ws_frames) >= 2 and ws_frames[0].get("connected") is False and ws_frames[-1].get("connected") is True,
+                  "mqtt_status pushed on the save (disconnected) and on the reconnect (connected)", str(ws_frames))
+            ws.sock.close()
             m = sub2.wait_for("homeassistant/select/harmony-test_activity/config", 10, lambda p: p == b"")
             check(m is not None and broker.retained.get("homeassistant/select/harmony-test_activity/config", b"") == b"",
                   "discovery off: the configs are cleared on reconnect", str(m))
