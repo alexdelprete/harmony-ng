@@ -20,12 +20,13 @@ import json
 import os
 import re
 import struct
+import subprocess
 import sys
 import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hub_harness import HubHarness, SAMPLE_CONFIG  # noqa: E402
+from hub_harness import HubHarness, SAMPLE_CONFIG, REPO_ROOT  # noqa: E402
 from mock_mqtt import MockBroker, MockClient  # noqa: E402
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -40,24 +41,22 @@ BT_STATUS = {
     "hosts": [{"addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "connected": True, "paired": True, "pairing": False}],
 }
 
-RF_STATUS = {
-    "running": True, "ok": True, "fw_version": "v72.00", "paired": True, "rf_address": "A1B2C3D4",
-    "hub_rf_address": "A1B2C3D4", "pairing_active": False, "sync_pending": False, "sync_pending_slot": 0,
-    "sync_pending_diff": "Hub configuration changed. Push settings to sync.", "hub_config_version": 7,
-    "ota": {"in_progress": False, "slot": 0, "status": 0, "sent_bytes": 0, "total_bytes": 0, "sent_chunks": 0,
-            "total_chunks": 0, "error": ""},
-    "slots": [
-        {"slot": 1, "name": "Harmony Remote (Slot 1)", "model": "elite", "has_screen": True, "supports_ota": True,
-         "active": True, "in_sync": True, "address": "E5F60718", "rf_address": "E5F60718", "sw_version": "2.2.0",
-         "remote_id": "20141001120000-000002", "config_version": 7,
-         "battery": {"percent": 87, "charging": False, "voltage_mv": 3980},
-         "link": {"frames_rx": 120, "acked_sent": 12, "acked_ok": 12, "retries": 0, "naks": 0, "last_seen_s": 2}},
-        {"slot": 2, "name": "Harmony Elite (Slot 2)", "model": "unknown", "has_screen": True, "supports_ota": True,
-         "active": False, "in_sync": False, "address": "None", "rf_address": "None", "sw_version": "unknown",
-         "config_version": 0, "battery": {"percent": 0, "charging": False, "voltage_mv": 0},
-         "link": {"frames_rx": 0, "acked_sent": 0, "acked_ok": 0, "retries": 0, "naks": 0, "last_seen_s": -1}},
-    ],
-}
+def load_rf_status():
+    """hub_rf's RF status object from the real builder (tests/rf_status_sample.c: a Harmony
+    Ultimate in slot 1 with skin 0x64 and EquadID 0x4021, slot 2 empty; dummy addresses)"""
+    src = os.path.join(REPO_ROOT, "payload", "source")
+    out = os.path.join(REPO_ROOT, "build", "tmp", "test_host", "rf_status_sample")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    subprocess.run(["gcc", "-Wall", "-O2", "-I" + src, os.path.join(REPO_ROOT, "tests", "rf_status_sample.c"),
+                    os.path.join(src, "rf_state.c"), os.path.join(src, "rf_api.c"), os.path.join(src, "cJSON.c"),
+                    "-lpthread", "-lm", "-o", out], check=True)
+    with open(os.path.join(REPO_ROOT, "VERSION")) as f:
+        version = f.read().strip()
+    res = subprocess.run([out, version], check=True, capture_output=True, text=True)
+    return json.loads(res.stdout)
+
+
+RF_STATUS = load_rf_status()
 
 IR_RAW_REQUEST = {"frequency": 38000, "timings": [9000, -4500, 560, -560, 560, -1690, 560, -560, 560, -39000],
                   "port": 1, "repeats": 1}
@@ -74,6 +73,48 @@ def mfg_blob(unit_id):
     img = bytearray(b"\xff" * 0x10000)
     img[0x9000:0x9000 + len(recs)] = recs
     return bytes(img)
+
+
+DOC_IP = "192.0.2.10"  # RFC 5737 documentation address
+
+
+def host_addresses():
+    """The recording host's IPv4 addresses (not loopback): they must not end up in a fixture"""
+    import socket
+    found = set()
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("192.0.2.1", 9))  # nothing is sent: picks the source address of the default route
+        found.add(s.getsockname()[0])
+        s.close()
+    except OSError:
+        pass
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            found.add(info[4][0])
+    except OSError:
+        pass
+    return [a for a in found if a and not a.startswith("127.")]
+
+
+def scrub_dir(out_dir):
+    """Replaces the recording host's addresses with DOC_IP in every fixture written"""
+    addrs = host_addresses()
+    if not addrs:
+        return
+    for name in sorted(os.listdir(out_dir)):
+        path = os.path.join(out_dir, name)
+        if not os.path.isfile(path):
+            continue
+        with open(path, newline="") as f:
+            text = f.read()
+        new = text
+        for a in addrs:
+            new = re.sub(r"(?<![0-9.])" + re.escape(a) + r"(?![0-9])", DOC_IP, new)
+        if new != text:
+            with open(path, "w", newline="") as f:
+                f.write(new)
+            print("  scrubbed the host address in %s" % name)
 
 
 def write_json(out_dir, name, obj):
@@ -256,6 +297,7 @@ def main():
                 os.remove(p)
             except OSError:
                 pass
+    scrub_dir(args.out)
     print("[+] done")
     return 0
 

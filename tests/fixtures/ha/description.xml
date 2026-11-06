@@ -8,7 +8,7 @@
     <manufacturerURL>https://github.com/iranl/harmony-ng</manufacturerURL>
     <modelDescription>Harmony Hub running harmony-ng</modelDescription>
     <modelName>Harmony Hub</modelName>
-    <modelNumber>2.2.0</modelNumber>
+    <modelNumber>2.3.0</modelNumber>
     <serialNumber>20140101120000-000001</serialNumber>
     <UDN>uuid:1c0dba38-c7c7-5277-a219-cd10fd0382c2</UDN>
   </device>
