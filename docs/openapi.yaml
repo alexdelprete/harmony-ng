@@ -1937,6 +1937,12 @@ paths:
       summary: CC2544 RF subsystem status
       description: |
         Proxied to hub_rf (port 8092). Returns remote RF status, paired slots, battery telemetry, and RF link statistics (frames_rx, acked_sent, acked_ok, retries, naks, last_seen_s).
+        Per slot, the product: model (ultimate, ultimate_one, ultimate_home, elite, 950, touch,
+        companion, smart_control, unknown), model_name (the stock product name, "Harmony Remote"
+        while unknown), skin (the skin id a touchscreen remote reports, null when not reported) and
+        equad_id (the CC2544's EquadID for the slot, null when not known: 16417 = 0x4021
+        touchscreen remotes, 16414 = 0x401E Smart Control, 16422 / 16423 Companion). A touchscreen
+        remote is unknown until it reports its skin id. docs/API.md 7.1.
       responses:
         '200':
           description: RF status
@@ -1970,7 +1976,10 @@ paths:
                     in_sync: true
                     address: "12345678"
                     rf_address: "12345678"
-                    model: "Harmony Companion"
+                    model: "companion"
+                    model_name: "Harmony Companion"
+                    skin: null
+                    equad_id: 16422
                     has_screen: false
                     supports_ota: false
                     sw_version: "N/A"
@@ -1987,12 +1996,15 @@ paths:
                       naks: 9
                       last_seen_s: 2
                   - slot: 2
-                    name: "Harmony Elite (Slot 2)"
+                    name: "Harmony Ultimate (Slot 2)"
                     active: true
                     in_sync: true
                     address: "87654321"
                     rf_address: "87654321"
-                    model: "elite"
+                    model: "ultimate"
+                    model_name: "Harmony Ultimate"
+                    skin: 100
+                    equad_id: 16417
                     has_screen: true
                     supports_ota: true
                     sw_version: "v2.0.2"
