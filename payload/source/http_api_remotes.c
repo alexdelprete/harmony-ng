@@ -1,4 +1,5 @@
 #include "hub_events.h"
+#include "state_watch.h"
 #include "http_api_remotes.h"
 #include "http_util.h"
 #include "config_store.h"
@@ -252,6 +253,34 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
         cJSON *resp = cJSON_CreateObject();
         cJSON_AddBoolToObject(resp, "ok", 1);
         cJSON_AddStringToObject(resp, "message", "Pair command issued to BTstack");
+        send_cjson_resp(client_fd, 200, resp);
+        cJSON_Delete(resp);
+        close(client_fd);
+        return 1;
+    }
+
+    /* Route: POST /api/rf/status-changed (internal): hub_rf pushes its GET /api/rf/status object
+     * whenever it changed. Loopback only; loopback callers are admin in http_auth, so hub_rf
+     * needs no token (same rule as its button-press posts). */
+    if (strcmp(clean_path, "/api/rf/status-changed") == 0 && strcmp(method, "POST") == 0) {
+        char cip[64] = {0};
+        get_client_ip(client_fd, cip, sizeof(cip));
+        if (strcmp(cip, "127.0.0.1") != 0 && strcmp(cip, "::1") != 0 && strcmp(cip, "::ffff:127.0.0.1") != 0) {
+            send_json_error(client_fd, 403, "loopback only");
+            close(client_fd);
+            return 1;
+        }
+        cJSON *st = (body && body[0]) ? cJSON_Parse(body) : NULL;
+        if (!st || !cJSON_IsObject(st)) {
+            cJSON_Delete(st);
+            send_json_error(client_fd, 400, "status object required");
+            close(client_fd);
+            return 1;
+        }
+        int emitted = state_watch_offer_rf_status(st); /* takes ownership */
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddBoolToObject(resp, "ok", 1);
+        cJSON_AddBoolToObject(resp, "changed", emitted ? 1 : 0);
         send_cjson_resp(client_fd, 200, resp);
         cJSON_Delete(resp);
         close(client_fd);

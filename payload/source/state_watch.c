@@ -6,7 +6,8 @@
  * too), it checks:
  *   - Bluetooth: hub_btstack's status file (same JSON as GET /api/bt-status)
  *       -> HUB_EV_BT_STATUS, payload = the /api/bt-status object
- *   - RF remotes: hub_rf's GET /api/rf/status on 127.0.0.1:8092
+ *   - RF remotes: pushed by hub_rf to POST /api/rf/status-changed (state_watch_offer_rf_status),
+ *     fetched once from GET /api/rf/status on 127.0.0.1:8092 at start as the baseline
  *       -> HUB_EV_RF_STATUS, payload = the /api/rf/status object
  *   - Configuration files (devices, activities, settings, remote button maps), by mtime/size
  *       -> HUB_EV_CONFIG_CHANGED, payload = {"files":["devices", ...]}
@@ -139,10 +140,21 @@ typedef struct {
     int seen;
 } watched_file_t;
 
+static const char *const k_rf_drop_slot[] = { "link", NULL };
+static char *g_last_rf = NULL;
+static pthread_mutex_t g_rf_lock = PTHREAD_MUTEX_INITIALIZER;
+
+int state_watch_offer_rf_status(cJSON *obj) {
+    if (!obj) return 0;
+    pthread_mutex_lock(&g_rf_lock);
+    int emitted = emit_if_changed(obj, HUB_EV_RF_STATUS, &g_last_rf, NULL, k_rf_drop_slot);
+    pthread_mutex_unlock(&g_rf_lock);
+    return emitted;
+}
+
 static void *state_watch_thread(void *arg) {
     (void)arg;
     static const char *const bt_drop[] = { "last_button", "last_seen", "updated", NULL };
-    static const char *const rf_drop_slot[] = { "link", NULL };
     watched_file_t files[] = {
         { "devices", HARMONY_DEVICES_FILE, 0, 0, 0 },
         { "activities", HARMONY_ACTIVITIES_FILE, 0, 0, 0 },
@@ -151,7 +163,8 @@ static void *state_watch_thread(void *arg) {
         { "remote_map", HARMONY_DIR "/remote_slot2_map.json", 0, 0, 0 },
     };
     const size_t nfiles = sizeof(files) / sizeof(files[0]);
-    char *last_bt = NULL, *last_rf = NULL;
+    char *last_bt = NULL;
+    int rf_baseline = 0;
 
     for (;;) {
         usleep(WATCH_INTERVAL_US);
@@ -161,8 +174,22 @@ static void *state_watch_thread(void *arg) {
         free(raw);
         if (bt) emit_if_changed(bt, HUB_EV_BT_STATUS, &last_bt, bt_drop, NULL);
 
-        cJSON *rf = fetch_rf_status();
-        if (rf) emit_if_changed(rf, HUB_EV_RF_STATUS, &last_rf, NULL, rf_drop_slot);
+        /* RF status: one fetch at start so the snapshot is complete before hub_rf's first push
+         * (hub_rf also pushes right after it starts); then pushes only */
+        if (!rf_baseline) {
+            pthread_mutex_lock(&g_rf_lock);
+            int have = (g_last_rf != NULL);
+            pthread_mutex_unlock(&g_rf_lock);
+            if (have) {
+                rf_baseline = 1;
+            } else {
+                cJSON *rf = fetch_rf_status();
+                if (rf) {
+                    state_watch_offer_rf_status(rf);
+                    rf_baseline = 1;
+                }
+            }
+        }
 
         cJSON *changed = NULL;
         for (size_t i = 0; i < nfiles; i++) {

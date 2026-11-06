@@ -755,6 +755,12 @@ Returns CC2544 radio state, paired remote slots, model identification, screen ca
   ```
 - `slots[].link`: RF traffic with the remote since `hub_rf` started: protocol frames received, frames sent that wait for an ACK (resends included) and how many were ACKed, resends, sends the Hub's CC2544 refused (NAK), and seconds since the last frame from the remote (`-1` before the first).
 
+#### `POST /api/rf/status-changed` (internal)
+`hub_rf` posts the object above to this endpoint whenever it changed (once a second at most; the
+`link` counters and `battery.voltage_mv` are not changes). The daemon turns it into an `rf_status`
+WebSocket event (10.12). Accepted from loopback only (`403` otherwise); the body must be the status
+object (`400` otherwise). Reply: `{"ok": true, "changed": true|false}`.
+
 ### 7.2 RF Pairing
 #### `GET /api/rf/pair?slot={1|2}` or `POST /api/rf/pair`
 Initiates RF pairing beacon on slot 1 or slot 2 for Harmony Elite, Harmony Companion, or Harmony Smart Control remotes.

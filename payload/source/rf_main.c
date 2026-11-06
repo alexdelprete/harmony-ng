@@ -518,10 +518,23 @@ int main(int argc, char **argv) {
 
     printf("[+] hub_rf ready and operational.\n");
 
-    /* Main loop wait */
+    /* Main loop: once a second, push the RF status to hub_daemon when it changed (battery,
+     * charging, link state, pairing, model, version, config sync, OTA state). The daemon turns
+     * it into an rf_status event; the link counters and the battery voltage are not changes. */
+    char *last_key = NULL;
     while (g_running) {
         sleep(1);
+        char key[3584];
+        if (rf_build_status_json(key, sizeof(key), RF_STATUS_STABLE_ONLY) < 0) continue;
+        if (last_key && strcmp(last_key, key) == 0) continue;
+        free(last_key);
+        last_key = strdup(key);
+        char body[3584];
+        if (rf_build_status_json(body, sizeof(body), 0) > 0) {
+            http_post_local(DAEMON_PORT, "/api/rf/status-changed", body);
+        }
     }
+    free(last_key);
 
     printf("[+] Shutting down hub_rf...\n");
     rf_spi_close();

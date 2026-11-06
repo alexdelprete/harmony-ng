@@ -2,7 +2,7 @@
 """
 WebSocket event tests against hub_daemon_test (spec docs/HA_INTEGRATION_FIRMWARE_SPEC.md,
 milestone 1): activity_state and activity_progress on an activity switch (3.2), config_changed
-and bt_status from the state watcher (3.3), button events from /api/button-press (3.4).
+and bt_status from the state watcher (3.3), button events from /api/button-press (3.4), rf_status from hub_rf's push to /api/rf/status-changed (3.5).
 
 Usage: python3 tests/test_ws_events.py            (builds hub_daemon_test if missing)
 Pure stdlib; the daemon runs on a temporary mock root with tests/fixtures/ha/sample_config.
@@ -178,11 +178,55 @@ def test_button_events(hub):
     ws.close()
 
 
+def rf_status_sample(percent=80, frames_rx=10, voltage=3950):
+    return {"running": True, "ok": True, "fw_version": "v72.00", "paired": True, "rf_address": "A22394AD",
+            "hub_rf_address": "A22394AD", "pairing_active": False, "sync_pending": False, "sync_pending_slot": 0,
+            "sync_pending_diff": "", "hub_config_version": 7,
+            "ota": {"in_progress": False, "slot": 0, "status": 0, "sent_bytes": 0, "total_bytes": 0,
+                    "sent_chunks": 0, "total_chunks": 0, "error": ""},
+            "slots": [
+                {"slot": 1, "name": "Harmony Remote (Slot 1)", "model": "elite", "has_screen": True, "supports_ota": True,
+                 "active": True, "in_sync": True, "address": "946C7436", "rf_address": "946C7436", "sw_version": "2.2.0",
+                 "config_version": 7, "battery": {"percent": percent, "charging": False, "voltage_mv": voltage},
+                 "link": {"frames_rx": frames_rx, "acked_sent": 1, "acked_ok": 1, "retries": 0, "naks": 0, "last_seen_s": 2}},
+                {"slot": 2, "name": "Harmony Elite (Slot 2)", "model": "unknown", "has_screen": True, "supports_ota": True,
+                 "active": False, "in_sync": False, "address": "None", "rf_address": "None", "sw_version": "unknown",
+                 "config_version": 0, "battery": {"percent": 0, "charging": False, "voltage_mv": 0},
+                 "link": {"frames_rx": 0, "acked_sent": 0, "acked_ok": 0, "retries": 0, "naks": 0, "last_seen_s": -1}}]}
+
+
+def test_rf_status_push(hub):
+    print("[-] 3.5 rf_status from hub_rf's push to POST /api/rf/status-changed")
+    ws = hub.ws()
+    time.sleep(0.2)
+    ws.drain(0.3)
+    st, resp = hub.http_post("/api/rf/status-changed", rf_status_sample())
+    check(st == 200 and resp.get("ok") is True and resp.get("changed") is True, "first push: changed", "%s %s" % (st, resp))
+    msg, frames = ws.wait_for("rf_status", 3)
+    check(msg is not None and msg.get("slots", [{}])[0].get("battery", {}).get("percent") == 80, "rf_status event", str(frames))
+    check(msg is not None and msg["slots"][0]["battery"]["voltage_mv"] == 3950 and msg["slots"][0]["link"]["frames_rx"] == 10,
+          "payload keeps voltage and link counters", str(msg))
+    # Only link counters and voltage differ: no event
+    st, resp = hub.http_post("/api/rf/status-changed", rf_status_sample(frames_rx=999, voltage=3800))
+    check(st == 200 and resp.get("changed") is False, "same status: changed false", str(resp))
+    check([m for m in ws.drain(1.0) if m.get("type") == "rf_status"] == [], "no rf_status for link/voltage only")
+    # Battery percent changed: event
+    st, resp = hub.http_post("/api/rf/status-changed", rf_status_sample(percent=79, frames_rx=1000))
+    check(st == 200 and resp.get("changed") is True, "battery change: changed true", str(resp))
+    msg, frames = ws.wait_for("rf_status", 3)
+    check(msg is not None and msg["slots"][0]["battery"]["percent"] == 79, "second rf_status event", str(frames))
+    # Bad body
+    st, resp = hub.http_post("/api/rf/status-changed", None, raw=b"[1,2]")
+    check(st == 400, "400 for a non-object body (%s)" % st)
+    ws.close()
+
+
 def main():
     with HubHarness(port=PORT) as hub:
         test_activity_switch(hub)
         test_state_watcher(hub)
         test_button_events(hub)
+        test_rf_status_push(hub)
     print("\n%d passed, %d failed" % (g_passed, g_failed))
     return 1 if g_failed else 0
 

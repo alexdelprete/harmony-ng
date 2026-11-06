@@ -1919,6 +1919,34 @@ paths:
                       naks: 1
                       last_seen_s: 14
 
+  /api/rf/status-changed:
+    post:
+      tags:
+        - RF & Elite Remote
+      summary: Internal. hub_rf pushes its status object when it changed
+      description: |
+        Loopback only. hub_rf posts the GET /api/rf/status object whenever it changed (at most
+        once a second); the daemon emits an rf_status WebSocket event when the object differs from
+        the last one (link counters and battery.voltage_mv ignored).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Accepted
+          content:
+            application/json:
+              example:
+                ok: true
+                changed: true
+        '400':
+          description: Body is not a JSON object
+        '403':
+          description: Not from loopback
+
   /api/rf/pair:
     get:
       tags:
