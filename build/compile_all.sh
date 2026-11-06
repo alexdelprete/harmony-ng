@@ -90,6 +90,7 @@ build_daemon() {
         payload/source/orchestrator.c \
         payload/source/orchestrator_queue.c \
         payload/source/hub_mqtt.c \
+        payload/source/hub_mqtt_ha.c \
         payload/source/hub_ws.c \
         payload/source/hub_ntp.c \
         payload/source/resource_cache.c \

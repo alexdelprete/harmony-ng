@@ -445,11 +445,24 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
                 cJSON_AddStringToObject(cfg, "clientId", p_cid->valuestring);
             }
 
-            /* Fields of the old MQTT layer are dropped from the stored config: discovery,
-             * device name, keepalive and the per-remote event topics (v2 publishes button
-             * events on <base>/remote/<slot>/button, always) */
+            cJSON *p_disc = cJSON_GetObjectItemCaseSensitive(params, "discoveryPrefix");
+            if (p_disc && cJSON_IsString(p_disc) && p_disc->valuestring[0]) {
+                cJSON_DeleteItemFromObject(cfg, "discoveryPrefix");
+                cJSON_AddStringToObject(cfg, "discoveryPrefix", p_disc->valuestring);
+            }
+            cJSON *p_ha = cJSON_GetObjectItemCaseSensitive(params, "haDiscovery");
+            if (p_ha) {
+                int ha_val = (cJSON_IsTrue(p_ha) || (cJSON_IsNumber(p_ha) && p_ha->valueint > 0) ||
+                              (cJSON_IsString(p_ha) && (strcmp(p_ha->valuestring, "1") == 0 || strcasecmp(p_ha->valuestring, "true") == 0)));
+                cJSON_DeleteItemFromObject(cfg, "haDiscovery");
+                cJSON_AddBoolToObject(cfg, "haDiscovery", ha_val);
+            }
+
+            /* Fields of the old MQTT layer that have no v2 equivalent are dropped: device name
+             * (the hub name is used), keepalive and the per-remote event topics (button events
+             * always go to <base>/remote/<slot>/button) */
             static const char *const k_legacy_keys[] = {
-                "discoveryPrefix", "name", "deviceName", "keepAlive", "haDiscovery",
+                "name", "deviceName", "keepAlive",
                 "btRemoteEvents", "btRemoteTopic", "eliteRemoteEvents", "eliteRemoteTopic",
                 "slot1RemoteEvents", "slot1RemoteTopic", "slot2RemoteEvents", "slot2RemoteTopic", NULL
             };

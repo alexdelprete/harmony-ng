@@ -37,7 +37,7 @@ HUB_DAEMON_SOURCES = [
     "http_api_custom_icons.c", "http_api_network.c", "hub_network_util.c",
     "http_api_remotes.c", "http_api_ota.c", "http_api_backup.c", "http_api_system.c",
     "config_store.c", "bt_migrate.c", "config_sanitize.c", "orchestrator.c",
-    "orchestrator_queue.c", "hub_mqtt.c", "hub_ws.c", "hub_ntp.c",
+    "orchestrator_queue.c", "hub_mqtt.c", "hub_mqtt_ha.c", "hub_ws.c", "hub_ntp.c",
     "resource_cache.c", "cJSON.c", "ir_encoder.c", "ir_i2s.c", "hw_action.c",
     "ws_server.c", "state_watch.c", "hub_events.c", "hub_info.c", "hub_mdns.c", "hub_cmd.c", "mfg_id.c", "mqtt_client.c", "sha256.c",
     "timezone_db.c",
