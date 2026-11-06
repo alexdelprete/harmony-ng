@@ -122,6 +122,15 @@ int rf_build_status_json(char *body, size_t len, unsigned flags) {
     bool slot1_in_sync = is_comp1 ? true : (g_remote_versions[0].config_version == g_config_version && g_paired_remotes[0].active);
     bool slot2_in_sync = is_comp2 ? true : (g_remote_versions[1].config_version == g_config_version && g_paired_remotes[1].active);
 
+    /* remote_id is present only once the remote reported it since pairing */
+    char rid_json[MAX_PAIRED_REMOTES][48];
+    for (int i = 0; i < MAX_PAIRED_REMOTES; i++) {
+        if (g_remote_versions[i].remote_id[0]) {
+            snprintf(rid_json[i], sizeof(rid_json[i]), ",\"remote_id\":\"%s\"", g_remote_versions[i].remote_id);
+        } else {
+            rid_json[i][0] = '\0';
+        }
+    }
     const char *ver1_str = (is_comp1 && strcmp(g_remote_versions[0].sw_version, "unknown") == 0) ? "N/A" : g_remote_versions[0].sw_version;
     const char *ver2_str = (is_comp2 && strcmp(g_remote_versions[1].sw_version, "unknown") == 0) ? "N/A" : g_remote_versions[1].sw_version;
 
@@ -159,8 +168,8 @@ int rf_build_status_json(char *body, size_t len, unsigned flags) {
         "\"sync_pending\":%s,\"sync_pending_slot\":%d,\"sync_pending_diff\":\"%s\",\"hub_config_version\":%d,"
         "\"ota\":{\"in_progress\":%s,\"slot\":%d,\"status\":%d,\"sent_bytes\":%u,\"total_bytes\":%u,\"sent_chunks\":%u,\"total_chunks\":%u,\"error\":\"%s\"},"
         "\"slots\":["
-        "{\"slot\":1,\"name\":\"%s\",\"model\":\"%s\",\"has_screen\":%s,\"supports_ota\":%s,\"active\":%s,\"in_sync\":%s,\"address\":\"%s\",\"rf_address\":\"%s\",\"sw_version\":\"%s\",\"config_version\":%d,\"battery\":{\"percent\":%d,\"charging\":%s,\"voltage_mv\":%d},\"link\":%s},"
-        "{\"slot\":2,\"name\":\"%s\",\"model\":\"%s\",\"has_screen\":%s,\"supports_ota\":%s,\"active\":%s,\"in_sync\":%s,\"address\":\"%s\",\"rf_address\":\"%s\",\"sw_version\":\"%s\",\"config_version\":%d,\"battery\":{\"percent\":%d,\"charging\":%s,\"voltage_mv\":%d},\"link\":%s}"
+        "{\"slot\":1,\"name\":\"%s\",\"model\":\"%s\",\"has_screen\":%s,\"supports_ota\":%s,\"active\":%s,\"in_sync\":%s,\"address\":\"%s\",\"rf_address\":\"%s\",\"sw_version\":\"%s\"%s,\"config_version\":%d,\"battery\":{\"percent\":%d,\"charging\":%s,\"voltage_mv\":%d},\"link\":%s},"
+        "{\"slot\":2,\"name\":\"%s\",\"model\":\"%s\",\"has_screen\":%s,\"supports_ota\":%s,\"active\":%s,\"in_sync\":%s,\"address\":\"%s\",\"rf_address\":\"%s\",\"sw_version\":\"%s\"%s,\"config_version\":%d,\"battery\":{\"percent\":%d,\"charging\":%s,\"voltage_mv\":%d},\"link\":%s}"
         "]}",
         g_fw_version, (g_has_paired_device || g_paired_remotes[0].active || g_paired_remotes[1].active) ? "true" : "false",
         hub_rf_str, hub_rf_str,
@@ -170,11 +179,11 @@ int rf_build_status_json(char *body, size_t len, unsigned flags) {
         ota_in_prog ? "true" : "false", ota_slot, ota_status, ota_sent_b, ota_tot_b, ota_sent_c, ota_tot_c, ota_err,
         name1, model1, is_comp1 ? "false" : "true", is_comp1 ? "false" : "true",
         g_paired_remotes[0].active ? "true" : "false", slot1_in_sync ? "true" : "false", addr1_str, addr1_str,
-        ver1_str, is_comp1 ? 0 : g_remote_versions[0].config_version,
+        ver1_str, rid_json[0], is_comp1 ? 0 : g_remote_versions[0].config_version,
         g_remote_batteries[0].percent, g_remote_batteries[0].charging ? "true" : "false", stable ? 0 : g_remote_batteries[0].voltage_mv, link_json[0],
         name2, model2, is_comp2 ? "false" : "true", is_comp2 ? "false" : "true",
         g_paired_remotes[1].active ? "true" : "false", slot2_in_sync ? "true" : "false", addr2_str, addr2_str,
-        ver2_str, is_comp2 ? 0 : g_remote_versions[1].config_version,
+        ver2_str, rid_json[1], is_comp2 ? 0 : g_remote_versions[1].config_version,
         g_remote_batteries[1].percent, g_remote_batteries[1].charging ? "true" : "false", stable ? 0 : g_remote_batteries[1].voltage_mv, link_json[1]);
     if (blen < 0) return -1;
     if ((size_t)blen >= len) return -1;

@@ -2024,6 +2024,7 @@ paths:
                     has_screen: true
                     supports_ota: true
                     sw_version: "v2.0.2"
+                    remote_id: "20141001120000-000002"
                     config_version: 3
                     battery:
                       percent: 78

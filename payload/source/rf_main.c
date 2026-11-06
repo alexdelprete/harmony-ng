@@ -273,14 +273,7 @@ void handle_rf_frame(const rf_frame_t *f) {
 
             char vpath[64];
             snprintf(vpath, sizeof(vpath), "/data/harmony/elite_slot%d_version.json", slot);
-            if (ver_changed || access(vpath, F_OK) != 0) {
-                FILE *vf = fopen(vpath, "w");
-                if (vf) {
-                    fprintf(vf, "{\"slot\":%d,\"version\":\"%s\",\"config_version\":%d,\"caps\":%d,\"timestamp\":%ld}\n",
-                            slot, g_remote_versions[idx].sw_version, cfg_ver, caps, (long)time(NULL));
-                    fclose(vf);
-                }
-            }
+            if (ver_changed || access(vpath, F_OK) != 0) rf_state_save_version_file(slot);
             printf("[*] VERSION_REPORT: Slot %d -> SW v%s, Config v%d, caps 0x%02X\n", slot, g_remote_versions[idx].sw_version, cfg_ver, caps);
             rf_frame_t ack;
             rf_build_ack(&ack, slot, f->seq, 0x00);
@@ -291,6 +284,33 @@ void handle_rf_frame(const rf_frame_t *f) {
                 usleep(25000);
                 rf_notify_update_available(slot);
             }
+            break;
+        }
+
+        case RF_MSG_UNIT_ID: {
+            /* The remote's factory unit id: payload[0] = length, then ASCII. Stored next to the
+             * version (file rewritten only on change), shown as slots[].remote_id. */
+            uint8_t slot = f->dev_slot & 0x0F;
+            if (slot < 1 || slot > 2) slot = 1;
+            int idx = slot - 1;
+            size_t n = f->payload[0];
+            if (n > RF_UNIT_ID_MAX) n = RF_UNIT_ID_MAX;
+            char id[RF_UNIT_ID_MAX + 1] = {0};
+            size_t k = 0;
+            for (size_t i = 0; i < n; i++) {
+                uint8_t c = f->payload[1 + i];
+                if (c < 0x21 || c > 0x7E) break; /* printable ASCII only, no blanks */
+                id[k++] = (char)c;
+            }
+            id[k] = '\0';
+            if (k > 0 && strcmp(g_remote_versions[idx].remote_id, id) != 0) {
+                snprintf(g_remote_versions[idx].remote_id, sizeof(g_remote_versions[idx].remote_id), "%s", id);
+                rf_state_save_version_file(slot);
+                printf("[*] UNIT_ID: Slot %d -> %s\n", slot, id);
+            }
+            rf_frame_t ack;
+            rf_build_ack(&ack, slot, f->seq, 0x00);
+            rf_send_frame(&ack);
             break;
         }
 
@@ -414,31 +434,9 @@ int main(int argc, char **argv) {
     }
     printf("[+] Hub RF config version: %d\n", g_config_version);
 
-    /* Load last known remote software and config versions from disk */
+    /* Load last known remote software and config versions (and unit id) from disk */
     for (int slot = 1; slot <= 2; slot++) {
-        char vpath[64];
-        snprintf(vpath, sizeof(vpath), "/data/harmony/elite_slot%d_version.json", slot);
-        FILE *fv = fopen(vpath, "r");
-        if (fv) {
-            char vbuf[256] = {0};
-            if (fread(vbuf, 1, sizeof(vbuf) - 1, fv) > 0) {
-                cJSON *vroot = cJSON_Parse(vbuf);
-                if (vroot) {
-                    cJSON *jv = cJSON_GetObjectItem(vroot, "version");
-                    cJSON *jcv = cJSON_GetObjectItem(vroot, "config_version");
-                    cJSON *jcaps = cJSON_GetObjectItem(vroot, "caps");
-                    if (cJSON_IsNumber(jcaps)) g_remote_versions[slot - 1].caps = (uint8_t)jcaps->valueint;
-                    if (jv && jv->valuestring) {
-                        snprintf(g_remote_versions[slot - 1].sw_version, sizeof(g_remote_versions[slot - 1].sw_version), "%s", jv->valuestring);
-                    }
-                    if (jcv) {
-                        g_remote_versions[slot - 1].config_version = (uint8_t)jcv->valueint;
-                    }
-                    cJSON_Delete(vroot);
-                }
-            }
-            fclose(fv);
-        }
+        rf_state_load_version_file(slot);
 
         /* The battery state is no longer kept on flash: remove a file left by older builds */
         char bpath[64];

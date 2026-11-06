@@ -3,6 +3,7 @@
 #include "elite_power.h"
 #include "elite_config.h"
 #include "elite_rf.h"
+#include "mfg_id.h"
 #include "elite_rf_sync.h"
 #include "elite_rf_ota.h"
 #include "elite_ui.h"
@@ -169,6 +170,12 @@ int main(int argc, char **argv) {
     sigaction(SIGILL, &sa, NULL);
 
     printf("[+] Starting Harmony Elite Custom Interface (elite_ui v%s)...\n", HARMONY_ELITE_VERSION);
+    if (mfg_read_unitid(getenv("HARMONY_MFG_FILE"), g_remote_unit_id, sizeof(g_remote_unit_id)) == 0) {
+        printf("[+] Unit id %s (mfg partition)\n", g_remote_unit_id);
+    } else {
+        g_remote_unit_id[0] = '\0';
+        printf("[!] No unit id in the mfg partition: none will be reported to the Hub\n");
+    }
 
     load_settings_conf();
     load_activity_usage();

@@ -794,6 +794,10 @@ Returns CC2544 radio state, paired remote slots, model identification, screen ca
   ```
 - `slots[].link`: RF traffic with the remote since `hub_rf` started: protocol frames received, frames sent that wait for an ACK (resends included) and how many were ACKed, resends, sends the Hub's CC2544 refused (NAK), and seconds since the last frame from the remote (`-1` before the first).
 
+- `slots[].remote_id`: the remote's factory unit id (its `mfg` partition, `RF_MSG_UNIT_ID`),
+  present once the remote reported it since pairing. The identifier for the remote's device in
+  integrations; the slot number is only an attribute. Cleared on unpair.
+
 #### `POST /api/rf/status-changed` (internal)
 `hub_rf` posts the object above to this endpoint whenever it changed (once a second at most; the
 `link` counters and `battery.voltage_mv` are not changes). The daemon turns it into an `rf_status`

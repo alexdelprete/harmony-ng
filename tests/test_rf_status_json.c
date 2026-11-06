@@ -129,6 +129,34 @@ int main(void) {
     rf_build_status_json(stable_b, sizeof(stable_b), RF_STATUS_STABLE_ONLY);
     CHECK(strcmp(stable_a, stable_b) != 0, "slot active is a change");
 
+    /* Unit id (RF_MSG_UNIT_ID): absent until reported, then in both forms, and a change */
+    g_paired_remotes[0].active = true;
+    rf_build_status_json(full, sizeof(full), 0);
+    CHECK(strstr(full, "remote_id") == NULL, "no remote_id before the remote reported one");
+    rf_build_status_json(stable_a, sizeof(stable_a), RF_STATUS_STABLE_ONLY);
+    snprintf(g_remote_versions[0].remote_id, sizeof(g_remote_versions[0].remote_id), "20140101120000-000002");
+    rf_build_status_json(full, sizeof(full), 0);
+    j = parse(full);
+    if (j) {
+        cJSON *s1 = cJSON_GetArrayItem(cJSON_GetObjectItem(j, "slots"), 0);
+        cJSON *rid = cJSON_GetObjectItem(s1, "remote_id");
+        CHECK(cJSON_IsString(rid) && strcmp(rid->valuestring, "20140101120000-000002") == 0, "remote_id in slot 1");
+        cJSON *s2 = cJSON_GetArrayItem(cJSON_GetObjectItem(j, "slots"), 1);
+        CHECK(cJSON_GetObjectItem(s2, "remote_id") == NULL, "slot 2 without a remote_id");
+        cJSON_Delete(j);
+    }
+    rf_build_status_json(stable_b, sizeof(stable_b), RF_STATUS_STABLE_ONLY);
+    CHECK(strcmp(stable_a, stable_b) != 0, "a reported remote_id is a change (pushed)");
+    char vjson[256];
+    CHECK(rf_state_version_json(1, vjson, sizeof(vjson)) > 0 && strstr(vjson, "\"remote_id\":\"20140101120000-000002\"") != NULL,
+          "version file JSON carries the remote_id");
+    CHECK(rf_state_version_json(2, vjson, sizeof(vjson)) > 0 && strstr(vjson, "remote_id") == NULL,
+          "version file JSON without a remote_id when none");
+    CHECK(rf_state_version_json(3, vjson, sizeof(vjson)) == -1, "version file JSON rejects slot 3");
+    g_remote_versions[0].remote_id[0] = '\0';
+    rf_build_status_json(stable_b, sizeof(stable_b), RF_STATUS_STABLE_ONLY);
+    CHECK(strcmp(stable_a, stable_b) == 0, "clearing the remote_id (unpair) restores the previous form");
+
     /* Radio query only when asked and the Hub address is unknown */
     rf_build_status_json(full, sizeof(full), RF_STATUS_QUERY_RADIO);
     CHECK(g_radio_writes == 1, "radio queried with RF_STATUS_QUERY_RADIO and no address");
