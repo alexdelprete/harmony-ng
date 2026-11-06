@@ -50,9 +50,10 @@ implementer can work through it without the design discussion.
 
 ### 0.3 Versioning and compatibility
 
-- `HARMONY_VERSION` becomes `2.3.0` when milestone 1 merges, `2.4.0` at milestone 2, `2.5.0` at
-  milestone 3 and `2.6.0` at milestone 4. The integration gates on the version string and on the
-  capability list, never on a commit.
+- The fork does not bump `HARMONY_VERSION`: release numbers belong to upstream, which sets them
+  when it merges, and a fork-side bump would collide with upstream's own releases. The integration
+  gates on `api_version` and on the capability list, never on a version string or a commit. Where
+  this document needs to name a firmware level it says milestone 1 to 4.
 - `api_version` is an integer in `GET /api/status`. It is `2` from milestone 1 on and only changes
   on a breaking change to an existing endpoint or message. Additions are announced through
   `capabilities` instead.
@@ -68,7 +69,7 @@ the milestones.
 | Need | API transport | MQTT transport | Milestone |
 | --- | --- | --- | --- |
 | Identity, version, capabilities | `GET /api/status` fields `hub_id`, `version`, `api_version`, `capabilities` | retained `<base>/hub` | 1, 3 |
-| Activity state and busy flag, pushed on every transition | `activity_state` WebSocket event | retained `<base>/activity` | 1, 3 |
+| Activity state and busy flag, pushed on every transition | `activity_state` WebSocket event | retained `<base>/activity_state` | 1, 3 |
 | Activity progress | `activity_progress` event (exists) | `<base>/progress` (exists) | 1, 3 |
 | Inventory and activities | `GET /api/inventory`, `GET /api/activities` (exist) | retained `<base>/inventory/index` and `<base>/inventory/<deviceId>` | 1, 3 |
 | Config change notice | `config_changed` event | `<base>/config` | 1, 3 |
@@ -323,7 +324,9 @@ Replace the 1 s HTTP poll of `127.0.0.1:8092/api/rf/status` in the watcher with 
   `HUB_EV_RF_STATUS` when it differs from the last one. Battery `voltage_mv` is still part of the
   payload; it just does not count as a change.
 - The watcher stops polling `hub_rf`. The one-time baseline at daemon start is fetched once from
-  `hub_rf` so the snapshot is complete before the first push.
+  `hub_rf` so the snapshot is complete before the first push. This reworks the poll that PR #74
+  introduced days earlier; the PR description should say why (the poll served only the web UIs,
+  the push serves every sink and removes a 1 s timer).
 - The loopback-only check must also exempt the call from auth, as `button-press` from `hub_rf`
   must already be; verify and document the rule in `http_server.c`.
 
@@ -337,7 +340,7 @@ changed, expect a second. The co-simulation test (`tests/test_co_simulation.py`)
 `GET /api/status` gains:
 
 ```json
-{"hub_id":"20140101120000-000001","version":"2.3.0","commit":"abc1234","api_version":2,
+{"hub_id":"20140101120000-000001","version":"2.2.0","commit":"abc1234","api_version":2,
  "capabilities":["events","snapshot","ws_auth","ws_keepalive","ir_raw","rf_wake"],
  "legacy_enabled":false,"mdns_enabled":true}
 ```
@@ -391,7 +394,7 @@ the daemon sends one frame:
 
 ```json
 {"type":"snapshot","msgId":N,
- "hub":{"hub_id":"...","hub_name":"...","version":"2.3.0","api_version":2,"capabilities":[...],
+ "hub":{"hub_id":"...","hub_name":"...","version":"2.2.0","api_version":2,"capabilities":[...],
         "auth_enabled":false,"uptime_sec":34821,"legacy_enabled":false,"mdns_enabled":true},
  "activity_state":{...},
  "bt_status":{...},
@@ -577,7 +580,7 @@ the reconnect backoff and the LWT on `<base>/status` stay.
 | --- | --- | --- | --- |
 | `<base>/status` | yes | 1 | `online` / `offline` (LWT), unchanged |
 | `<base>/hub` | yes | 1 | the `hub` object of the snapshot (3.9) |
-| `<base>/activity` | yes | 1 | `activity_state` payload |
+| `<base>/activity_state` | yes | 1 | `activity_state` payload |
 | `<base>/progress` | no | 0 | `activity_progress` payload |
 | `<base>/bt` | yes | 1 | `bt_status` payload |
 | `<base>/rf` | yes | 1 | `rf_status` payload |
@@ -608,8 +611,12 @@ sample configuration or the owner's Hub needs it.
   changed.
 - When the broker is down, events are dropped (as today) and the retained state is resent on
   reconnect; nothing is queued in RAM beyond the client's packet buffer.
-- The aliases `<base>/current_activity`, `<base>/activity_id` and the old `<base>/state` are no
-  longer published. The release note lists the replacements.
+- The old state topics `<base>/state`, `<base>/activity`, `<base>/current_activity` and
+  `<base>/activity_id` are no longer published; on the first start of the new firmware an empty
+  retained payload is published once to each of them so brokers drop the stale values. The new
+  JSON topic is named `activity_state`, not `activity`, so a consumer still reading the old name
+  gets nothing rather than a payload of a different shape. The release note lists the new topics
+  for other MQTT consumers to move to.
 
 ### 5.3 Command channel
 
@@ -635,9 +642,10 @@ Reply on `<base>/cmd/response`:
 Codes and errors equal the REST ones. A request without `id` is executed and not answered. Malformed
 JSON is answered with `code` 400 when an `id` can be recovered, otherwise logged.
 
-Compatibility: `<base>/activity/set` (payload activity id or `PowerOff`), `<base>/send_command`
-and `<base>/sync` stay subscribed as thin aliases that build a request without `id`. The
-per-slot `remote/<n>/sleep` topics stay. `harmony/ir/pronto` stays.
+No old command topics survive: `<base>/activity/set`, `<base>/send_command`, `<base>/command`
+and `<base>/command/#`, `<base>/sync`, `<base>/remote/<n>/sleep`, `<base>/remote/sleep` and
+`harmony/ir/pronto` are no longer subscribed. `<base>/cmd` and `<base>/ir/raw` are the only
+inbound topics. Pronto over MQTT goes away; the REST endpoint keeps it.
 
 ### 5.4 Discovery removal
 
@@ -650,21 +658,24 @@ and the per-slot remote buttons) so Home Assistant removes the orphaned entities
 marker. The exact topic list is taken from `hub_mqtt_ha.c` before deletion and kept in a table in
 `hub_mqtt.c`.
 
-The release note for 2.5.0 says the Home Assistant integration replaces the discovery entities and
+The release note of the milestone 3 PR says the Home Assistant integration replaces the discovery entities and
 names the integration.
 
 ### 5.5 Settings and status
 
-`POST /api/mqtt-save` is unchanged. `GET /api/mqtt-status` and the `mqtt` member of `/api/status`
-gain `"v2":true`. The `slot1RemoteEvents`/`slot2RemoteEvents` toggles now control
-`<base>/remote/<slot>/button`; the custom topic fields are honoured as the topic for that slot.
+`POST /api/mqtt-save` keeps `enabled`, `host`, `port`, `username`, `password`, `baseTopic` and
+`clientId`. The per-slot `slotNRemoteEvents` and `slotNRemoteTopic` fields are removed from the
+endpoint, the settings file and both web UIs: button events are always published on
+`<base>/remote/<slot>/button`, no custom topics. `GET /api/mqtt-status` and the `mqtt` member of
+`/api/status` gain `"v2":true`.
 
 ### 5.6 Button events
 
 `<base>/remote/<slot>/button` replaces the pulse-then-zero scheme on `remotes/slotN/Cmd` and the
 device button pulse topics. Press and release are two messages, QoS 1, not retained. The device
-pulse topics (`<base>/button/device/<cmd>` and per-device `mqttTopic`) stay for users who wired
-them, published on press only, as today.
+pulse topics (`<base>/button/device/<cmd>`, the per-device `mqttTopic` and `mqttPulse` fields, the
+`POST /api/button-press` MQTT dispatch and the `/api/device-mqtt-test` endpoint) are removed; the
+fields are ignored when present in `devices.json` and dropped from the web UI device editor.
 
 ### 5.7 Tests
 
@@ -714,7 +725,7 @@ integration's config flow. Where this section and Appendix B disagree, Appendix 
 
   ```json
   {"id":1,"code":200,"msg":"OK",
-   "data":{"activeRemoteId":"<activeRemoteId>","hubSwVersion":"2.6.0",
+   "data":{"activeRemoteId":"<activeRemoteId>","hubSwVersion":"2.2.0",
            "discoveryServer":"https://svcs.myharmony.com/Discovery/Discovery.svc",
            "hubName":"<hub_name>","accountId":"0","email":""}}
   ```
@@ -824,7 +835,7 @@ The digest object (reply `data` of `statedigest?get` and `data` of every
 
 ```json
 {"activityId":"123456","activityStatus":1,"configVersion":12,"syncStatus":0,
- "hubSwVersion":"2.6.0","runningActivityList":"123456","stateVersion":1,"sleepTimerId":-1,
+ "hubSwVersion":"2.2.0","runningActivityList":"123456","stateVersion":1,"sleepTimerId":-1,
  "tzOffset":"0","tzoffset":"0","mode":3,"wifiStatus":1,"updates":{},"hubUpdate":false,
  "contentVersion":0,"accountId":"0","activitySetupState":false,"discoveryServer":
  "https://svcs.myharmony.com/Discovery/Discovery.svc","errorId":0,"errorCode":"200","errorString":"OK",
