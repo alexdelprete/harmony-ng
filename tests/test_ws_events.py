@@ -180,14 +180,14 @@ def test_button_events(hub):
 
 
 def rf_status_sample(percent=80, frames_rx=10, voltage=3950):
-    return {"running": True, "ok": True, "fw_version": "v72.00", "paired": True, "rf_address": "A22394AD",
-            "hub_rf_address": "A22394AD", "pairing_active": False, "sync_pending": False, "sync_pending_slot": 0,
+    return {"running": True, "ok": True, "fw_version": "v72.00", "paired": True, "rf_address": "A1B2C3D4",
+            "hub_rf_address": "A1B2C3D4", "pairing_active": False, "sync_pending": False, "sync_pending_slot": 0,
             "sync_pending_diff": "", "hub_config_version": 7,
             "ota": {"in_progress": False, "slot": 0, "status": 0, "sent_bytes": 0, "total_bytes": 0,
                     "sent_chunks": 0, "total_chunks": 0, "error": ""},
             "slots": [
                 {"slot": 1, "name": "Harmony Remote (Slot 1)", "model": "elite", "has_screen": True, "supports_ota": True,
-                 "active": True, "in_sync": True, "address": "946C7436", "rf_address": "946C7436", "sw_version": "2.2.0",
+                 "active": True, "in_sync": True, "address": "E5F60718", "rf_address": "E5F60718", "sw_version": "2.2.0",
                  "config_version": 7, "battery": {"percent": percent, "charging": False, "voltage_mv": voltage},
                  "link": {"frames_rx": frames_rx, "acked_sent": 1, "acked_ok": 1, "retries": 0, "naks": 0, "last_seen_s": 2}},
                 {"slot": 2, "name": "Harmony Elite (Slot 2)", "model": "unknown", "has_screen": True, "supports_ota": True,

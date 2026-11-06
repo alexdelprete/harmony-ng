@@ -66,8 +66,8 @@ int main(void) {
     printf("rf_build_status_json test\n");
     /* A paired Elite in slot 1 */
     g_paired_remotes[0].active = true;
-    g_paired_remotes[0].rf_addr[0] = 0x94; g_paired_remotes[0].rf_addr[1] = 0x6C;
-    g_paired_remotes[0].rf_addr[2] = 0x74; g_paired_remotes[0].rf_addr[3] = 0x36;
+    g_paired_remotes[0].rf_addr[0] = 0xE5; g_paired_remotes[0].rf_addr[1] = 0xF6;
+    g_paired_remotes[0].rf_addr[2] = 0x07; g_paired_remotes[0].rf_addr[3] = 0x18;
     g_paired_remotes[0].model = REMOTE_MODEL_ELITE;
     g_paired_remotes[0].last_seen_ms = 1;
     snprintf(g_remote_versions[0].sw_version, sizeof(g_remote_versions[0].sw_version), "2.2.0");
