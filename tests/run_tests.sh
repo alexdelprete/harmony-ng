@@ -53,6 +53,7 @@ if [ ! -f "$HOST_BUILD_DIR/hub_daemon_test" ]; then
         "$REPO_ROOT/payload/source/hub_events.c" \
         "$REPO_ROOT/payload/source/hub_info.c" \
         "$REPO_ROOT/payload/source/hub_mdns.c" \
+        "$REPO_ROOT/payload/source/hub_cmd.c" \
         "$REPO_ROOT/payload/source/mfg_id.c" \
         "$REPO_ROOT/payload/source/mqtt_client.c" \
         "$REPO_ROOT/payload/source/sha256.c" \
