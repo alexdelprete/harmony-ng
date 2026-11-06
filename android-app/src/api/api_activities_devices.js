@@ -39,6 +39,8 @@ export class HarmonyClientActivitiesDevices extends HarmonyClientCore {
         powerOffSequence: dev.powerOffSequence || [],
         isBt: isBt,
         mqttEnabled: isMqtt || !!dev.mqttEnabled,
+        mqttTopic: dev.mqttTopic || '{base_topic}/button/{device}/{command}',
+        mqttPulseMs: Number(dev.mqttPulseMs !== undefined ? dev.mqttPulseMs : 1000),
         commands: rawCmds.map((c, idx) => {
           if (typeof c === 'string') return { name: c, keyCode: '', raw: '' };
           const kCode = c.keyCode || '';

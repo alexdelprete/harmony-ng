@@ -40,8 +40,19 @@ export function createView() {
           h('input', { id: 'mqtt-pass', type: 'password', className: 'form-input' }),
         ]),
       ]),
+      h('div', { className: 'card', style: { marginTop: '10px', padding: '12px', background: 'rgba(0,0,0,0.2)' } }, [
+        h('div', { className: 'card-title', style: { fontSize: '13px', marginBottom: '8px' }, text: 'Home Assistant MQTT discovery' }),
+        h('label', { style: { display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer', marginBottom: '6px' } }, [
+          h('input', { id: 'mqtt-ha-discovery', type: 'checkbox', checked: true }),
+          h('span', { style: { fontSize: '13px' }, text: 'Create Home Assistant entities automatically (activity select, sensors, buttons)' }),
+        ]),
+        h('div', { className: 'form-group' }, [
+          h('label', { className: 'form-label', text: 'Discovery prefix' }),
+          h('input', { id: 'mqtt-discovery-prefix', type: 'text', className: 'form-input', value: 'homeassistant' }),
+        ]),
+      ]),
       h('div', { className: 'help', style: { marginTop: '10px', fontSize: '12px' },
-        text: 'MQTT v2: state topics (hub, activity_state, bt, rf, config, inventory) and a command channel under the base topic; remote button events on <base>/remote/<slot>/button. No Home Assistant discovery entities: use the harmony-ng integration.' }),
+        text: 'MQTT v2: retained state topics (hub, activity_state, bt, rf, config, inventory) and the cmd channel under the base topic; remote button events on <base>/remote/<slot>/button. The harmony-ng Home Assistant integration does not need the discovery entities.' }),
       h('button', {
         type: 'submit',
         className: 'btn btn-primary',
@@ -444,6 +455,10 @@ export function createView() {
       if (portEl) portEl.value = cfg.port || 1883;
       if (topicEl) topicEl.value = cfg.baseTopic || 'harmony/hub';
       if (userEl) userEl.value = cfg.username || '';
+      const haEl = container.querySelector('#mqtt-ha-discovery');
+      const prefixEl = container.querySelector('#mqtt-discovery-prefix');
+      if (haEl) haEl.checked = cfg.haDiscovery !== false;
+      if (prefixEl) prefixEl.value = cfg.discoveryPrefix || 'homeassistant';
     } catch (e) {
       if (badge) {
         badge.className = 'badge badge-danger';
@@ -460,6 +475,8 @@ export function createView() {
       baseTopic: container.querySelector('#mqtt-basetopic')?.value.trim() || 'harmony/hub',
       username: container.querySelector('#mqtt-user')?.value.trim() || '',
       password: container.querySelector('#mqtt-pass')?.value || '',
+      haDiscovery: container.querySelector('#mqtt-ha-discovery')?.checked ? 1 : 0,
+      discoveryPrefix: container.querySelector('#mqtt-discovery-prefix')?.value.trim() || 'homeassistant',
     };
 
     try {

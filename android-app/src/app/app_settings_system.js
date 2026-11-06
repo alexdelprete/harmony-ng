@@ -69,6 +69,10 @@ export class HarmonyAppSettingsSystem extends HarmonyAppRemotesRf {
         document.getElementById('mqttUsername').value = st.config.username || '';
         document.getElementById('mqttBaseTopic').value = st.config.baseTopic || 'harmony/hub';
         document.getElementById('mqttClientId').value = st.config.clientId || 'harmony_hub';
+        const discEl = document.getElementById('mqttDiscoveryPrefix');
+        if (discEl) discEl.value = st.config.discoveryPrefix || 'homeassistant';
+        const haEl = document.getElementById('mqttHaDiscovery');
+        if (haEl) haEl.checked = st.config.haDiscovery !== false;
       }
     } catch (err) {
       if (badge) badge.textContent = 'Offline';
@@ -341,7 +345,9 @@ export class HarmonyAppSettingsSystem extends HarmonyAppRemotesRf {
       password: document.getElementById('mqttPassword')?.value,
       keep_password: document.getElementById('mqttKeepPass')?.checked ? 1 : 0,
       baseTopic: document.getElementById('mqttBaseTopic')?.value.trim(),
-      clientId: document.getElementById('mqttClientId')?.value.trim()
+      clientId: document.getElementById('mqttClientId')?.value.trim(),
+      discoveryPrefix: document.getElementById('mqttDiscoveryPrefix')?.value.trim() || 'homeassistant',
+      haDiscovery: document.getElementById('mqttHaDiscovery')?.checked ? 1 : 0
     };
 
     try {

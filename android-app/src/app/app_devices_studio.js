@@ -580,7 +580,9 @@ export class HarmonyAppDevicesStudio extends HarmonyAppActivitiesSim {
         icon
       };
       if (type === 'MQTT') {
+        devPayload.mqttTopic = `{base_topic}/button/${name.toLowerCase().replace(/\s+/g, '_')}/{command}`;
         devPayload.mqttEnabled = 1;
+        devPayload.mqttPulseMs = 1000;
       }
       const res = await this.client.saveNewDevice(devPayload);
       if (res && res.ok === false) {

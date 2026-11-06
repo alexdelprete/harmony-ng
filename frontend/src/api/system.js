@@ -99,6 +99,8 @@ export function createSystemApi(client) {
           username: data.username || cfg.username || '',
           baseTopic: data.baseTopic || cfg.baseTopic || 'harmony/hub',
           clientId: data.clientId || cfg.clientId || 'harmony_hub',
+          discoveryPrefix: data.discoveryPrefix || cfg.discoveryPrefix || 'homeassistant',
+          haDiscovery: data.haDiscovery !== undefined ? Boolean(data.haDiscovery) : (cfg.haDiscovery !== undefined ? Boolean(cfg.haDiscovery) : true),
           v2: Boolean(data.v2)
         }
       };
