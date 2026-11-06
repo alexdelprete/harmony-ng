@@ -469,6 +469,19 @@ void ws_set_client_role(int client_fd, int role) {
     pthread_mutex_unlock(&g_clients_lock);
 }
 
+int ws_is_client(int client_fd) {
+    int found = 0;
+    pthread_mutex_lock(&g_clients_lock);
+    for (size_t i = 0; i < WS_MAX_CLIENTS; i++) {
+        if (g_clients[i] == client_fd) {
+            found = 1;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_clients_lock);
+    return found;
+}
+
 int ws_get_client_role(int client_fd) {
     int role = 2;
     pthread_mutex_lock(&g_clients_lock);
