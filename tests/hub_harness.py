@@ -126,8 +126,10 @@ class HubHarness:
 
     def start(self):
         build_mock_lib()
-        if not os.path.exists(self.hub_bin):
-            build_hub_daemon_test()
+        if self.hub_bin == HUB_BIN:
+            build_hub_daemon_test()  # rebuilds when missing or older than a source
+        elif not os.path.exists(self.hub_bin):
+            raise RuntimeError("hub binary not found: %s" % self.hub_bin)
         self.mock_dir = tempfile.mkdtemp(prefix="hub_harness_")
         cfg = os.path.join(self.data_dir, "config")
         os.makedirs(cfg, exist_ok=True)
