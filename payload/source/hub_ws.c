@@ -61,7 +61,7 @@ static char *build_snapshot(int msg_id) {
     config_store_get_settings(&cs);
     cJSON_AddStringToObject(hub, "hub_id", hub_info_id());
     cJSON_AddStringToObject(hub, "hub_name", cs.hub_name[0] ? cs.hub_name : "Harmony Hub");
-    hub_info_add_status_fields(hub);
+    hub_info_add_status_fields(hub, &cs);
     cJSON_DeleteItemFromObjectCaseSensitive(hub, "commit");
     int auth_on = 0;
     load_user_accounts(NULL, 0, &auth_on);

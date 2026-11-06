@@ -43,6 +43,7 @@ gcc -Wall -O2 -g -DTEST_HARNESS=1 \
     "$REPO_ROOT/payload/source/state_watch.c" \
     "$REPO_ROOT/payload/source/hub_events.c" \
     "$REPO_ROOT/payload/source/hub_info.c" \
+    "$REPO_ROOT/payload/source/hub_mdns.c" \
     "$REPO_ROOT/payload/source/mfg_id.c" \
     "$REPO_ROOT/payload/source/mqtt_client.c" \
     "$REPO_ROOT/payload/source/sha256.c" \

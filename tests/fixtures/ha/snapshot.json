@@ -11,17 +11,18 @@
       "ws_auth",
       "ws_keepalive",
       "ir_raw",
+      "mdns",
       "rf_wake"
     ],
     "legacy_enabled": false,
-    "mdns_enabled": false,
+    "mdns_enabled": true,
     "auth_enabled": false,
-    "uptime_sec": 136705
+    "uptime_sec": 138029
   },
   "activity_state": {
     "type": "activity_state",
     "seq": 1,
-    "ts": 1793946632,
+    "ts": 1793947956,
     "activity": "-1",
     "state": 0,
     "stateName": "idle",
@@ -31,7 +32,7 @@
   "bt_status": {
     "type": "bt_status",
     "seq": 2,
-    "ts": 1793946633,
+    "ts": 1793947957,
     "ok": true,
     "running": true,
     "connected": true,
@@ -53,7 +54,7 @@
   "rf_status": {
     "type": "rf_status",
     "seq": 3,
-    "ts": 1793946633,
+    "ts": 1793947957,
     "running": true,
     "ok": true,
     "fw_version": "v72.00",
@@ -133,12 +134,12 @@
   },
   "config": {
     "files": {
-      "devices": 1793946632,
-      "activities": 1793946632,
-      "settings": 1793946632,
-      "remote_map": 1793946632
+      "devices": 1793947956,
+      "activities": 1793947956,
+      "settings": 1793947956,
+      "remote_map": 1793947956
     }
   },
   "seq": 3,
-  "ts": 1793946634
+  "ts": 1793947958
 }

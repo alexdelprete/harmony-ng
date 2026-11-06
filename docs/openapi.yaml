@@ -157,9 +157,9 @@ paths:
                 version: 2.2.0
                 commit: abc1234
                 api_version: 2
-                capabilities: [events, snapshot, ws_auth, ws_keepalive, ir_raw, rf_wake]
+                capabilities: [events, snapshot, ws_auth, ws_keepalive, ir_raw, mdns, rf_wake]
                 legacy_enabled: false
-                mdns_enabled: false
+                mdns_enabled: true
                 activity: "-1"
                 state: 0
                 busy: false
@@ -766,6 +766,7 @@ paths:
                 ntp_server: pool.ntp.org
                 timezone: Europe/Amsterdam
                 led_mode: always_on
+                mdns_enabled: true
     post:
       tags:
         - System & Status
@@ -785,12 +786,14 @@ paths:
                 ntp_server: {type: string}
                 timezone: {type: string, description: "IANA timezone name or POSIX TZ string"}
                 led_mode: {type: string}
+                mdns_enabled: {type: boolean, default: true, description: "mDNS responder for _harmony-ng._tcp; takes effect at once"}
             example:
               hub_name: Living Room Hub
               dry_run: false
               ntp_server: pool.ntp.org
               timezone: Europe/Amsterdam
               led_mode: always_on
+              mdns_enabled: true
       responses:
         '200':
           description: Settings saved

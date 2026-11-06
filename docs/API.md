@@ -183,9 +183,12 @@ Returns global hub settings from `/data/harmony/config/settings.json`.
     "dry_run": false,
     "ntp_server": "pool.ntp.org",
     "timezone": "Europe/Amsterdam",
-    "led_mode": "always_on"
+    "led_mode": "always_on",
+    "mdns_enabled": true
   }
   ```
+  - `mdns_enabled` (default `true`): the mDNS responder (1.11). Changing it starts or stops the
+    responder at once.
 
 #### `POST /api/settings`
 Updates global hub settings.
@@ -236,6 +239,31 @@ Executes system maintenance operations.
   ```
 
 ---
+
+### 1.11 Discovery (mDNS / DNS-SD)
+The Hub advertises itself as `_harmony-ng._tcp.local.` on port 8089 (capability flag `mdns`,
+setting `mdns_enabled`), so Home Assistant and `avahi-browse -r _harmony-ng._tcp` find it without
+an address. The responder runs inside `hub_daemon` on UDP 5353 (multicast group 224.0.0.251,
+unicast replies when the query asks for them); it probes for its names before announcing, announces
+twice at start, re-announces on an IP change (polled every 10 s) and on a change of any TXT value,
+and sends a goodbye (TTL 0) on a clean stop.
+- Instance name: `hub_name` with characters outside `[A-Za-z0-9 _-]` replaced by `-`
+  (`Harmony Hub` when empty); on a name conflict the hub id is appended. Consumers identify a Hub
+  by the TXT `id`, never by the instance name or hostname.
+- Hostname: `harmony-ng-<hub_id>.local.` with an A record for the active interface (no AAAA).
+- TTLs: 120 s for A and SRV, 4500 s for PTR and TXT. Known-answer suppression for the PTR.
+- TXT record, keys in this order:
+
+  | Key | Value |
+  | --- | --- |
+  | `id` | `hub_id` (factory unit id) |
+  | `ver` | firmware version (`HARMONY_VERSION`) |
+  | `api` | `api_version` (2) |
+  | `auth` | `1` when authentication is enabled |
+  | `mqtt` | `1` when the MQTT client is configured |
+  | `topic` | MQTT base topic, only when `mqtt=1` |
+  | `legacy` | `1` when the Logitech protocol shim is enabled (milestone 4; `0` until then) |
+  | `name` | raw `hub_name`, for display |
 
 ## 2. Firmware & OTA Updates
 

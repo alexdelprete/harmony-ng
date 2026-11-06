@@ -1,5 +1,6 @@
 #include "http_api_system.h"
 #include "hub_info.h"
+#include "hub_mdns.h"
 #include "http_util.h"
 #include "http_auth.h"
 #include "http_api_custom_icons.h"
@@ -53,6 +54,7 @@ static void get_cache_space_kb(uint64_t *total_kb, uint64_t *free_kb) {
 
 void apply_hub_settings(const struct hub_settings *s) {
     if (!s) return;
+    hub_mdns_apply_settings(s);
     int lfd = open("/sys/class/input/input0/led", O_WRONLY);
     if (lfd >= 0) {
         const char *val = "1\n";
@@ -103,7 +105,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         config_store_get_settings(&cs);
         cJSON_AddStringToObject(st, "hub_name", cs.hub_name[0] ? cs.hub_name : "Harmony Hub");
         cJSON_AddStringToObject(st, "firmware", "4.15.600");
-        hub_info_add_status_fields(st);
+        hub_info_add_status_fields(st, &cs);
         cJSON_AddStringToObject(st, "activity", orch_get_current_activity());
         cJSON_AddNumberToObject(st, "state", (int)orch_get_state());
         cJSON_AddBoolToObject(st, "busy", orch_is_busy() ? 1 : 0);
@@ -686,6 +688,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         cJSON_AddStringToObject(resp, "ntp_server", s.ntp_server);
         cJSON_AddStringToObject(resp, "timezone", s.timezone[0] ? s.timezone : "UTC");
         cJSON_AddStringToObject(resp, "led_mode", s.led_mode[0] ? s.led_mode : "always_on");
+        cJSON_AddBoolToObject(resp, "mdns_enabled", s.mdns_enabled ? 1 : 0);
         send_cjson_resp(client_fd, 200, resp);
         cJSON_Delete(resp);
         close(client_fd);
@@ -724,6 +727,11 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
                 strncpy(s.led_mode, item->valuestring, sizeof(s.led_mode) - 1);
                 s.led_mode[sizeof(s.led_mode) - 1] = '\0';
             }
+            item = cJSON_GetObjectItemCaseSensitive(p, "mdns_enabled");
+            if (item) {
+                if (cJSON_IsBool(item)) s.mdns_enabled = cJSON_IsTrue(item) ? 1 : 0;
+                else if (cJSON_IsNumber(item)) s.mdns_enabled = item->valueint ? 1 : 0;
+            }
             config_store_save_settings(&s);
             apply_hub_settings(&s);
             cJSON_Delete(p);
@@ -735,6 +743,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         cJSON_AddStringToObject(resp, "ntp_server", s.ntp_server);
         cJSON_AddStringToObject(resp, "timezone", s.timezone[0] ? s.timezone : "UTC");
         cJSON_AddStringToObject(resp, "led_mode", s.led_mode[0] ? s.led_mode : "always_on");
+        cJSON_AddBoolToObject(resp, "mdns_enabled", s.mdns_enabled ? 1 : 0);
         send_cjson_resp(client_fd, 200, resp);
         cJSON_Delete(resp);
         close(client_fd);
