@@ -44,9 +44,24 @@ HUB_DAEMON_SOURCES = [
 ]
 
 
+def _sources_newer_than(out):
+    """True when any daemon source or header is newer than the binary (a stale test binary
+    silently tests old code)."""
+    try:
+        out_mtime = os.path.getmtime(out)
+    except OSError:
+        return True
+    src_dir = os.path.join(REPO_ROOT, "payload", "source")
+    for name in os.listdir(src_dir):
+        if name.endswith((".c", ".h")) and os.path.getmtime(os.path.join(src_dir, name)) > out_mtime:
+            return True
+    return False
+
+
 def build_hub_daemon_test(force=False, extra_cflags=None, out=HUB_BIN):
-    """Compile the host daemon with -DTEST_HARNESS=1 (once, unless force)."""
-    if os.path.exists(out) and not force:
+    """Compile the host daemon with -DTEST_HARNESS=1 (when missing, when a source changed, or
+    with force)."""
+    if os.path.exists(out) and not force and not _sources_newer_than(out):
         return out
     os.makedirs(BUILD_DIR, exist_ok=True)
     cmd = ["gcc", "-Wall", "-O2", "-g", "-DTEST_HARNESS=1", "-I" + os.path.join(REPO_ROOT, "payload", "source")]
