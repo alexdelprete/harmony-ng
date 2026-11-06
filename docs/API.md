@@ -608,7 +608,11 @@ Dedicated blaster endpoint for raw Pronto hex code streams.
 
 ### 5.3 Button Press & MQTT Dispatch
 #### `POST /api/button-press` or `POST /api/mqtt-publish`
-Dispatches a button press pulse to local MQTT broker and hardware handlers.
+Dispatches a button press pulse to local MQTT broker and hardware handlers. Every call also
+gives a `button` event on the WebSocket (10.13) for `action` `press` (the default) and `release`;
+`hold` repeats only reach MQTT. `hub_rf` posts physical keys as `{"button": <key name>,
+"action", "source": "elite_rf", "slot"}` plus `deviceId` and `command` when the key was mapped to
+a device command; other callers may keep posting the key as `command`.
 - **Request Body**:
   ```json
   {
@@ -1202,6 +1206,26 @@ The `GET /api/rf/status` object (section 7.1), sent when it changes (the `link` 
 `battery.voltage_mv` do not count as a change, but are included).
 ```json
 {"type": "rf_status", "seq": 21, "ts": 1762387200, "ok": true, "slots": [ ... ]}
+```
+
+#### 10.13 Remote Button
+One event for the first press and one for the release of a physical key on an RF remote (held
+keys repeat on the Hub but give no further events). `button` is the key name as the remote's
+keymap knows it; `deviceId` and `command` are the device command the key was mapped to in the
+current activity, absent when the key was not mapped to a device command. Calls of
+`POST /api/button-press` from other sources give the same event with `source` `"api"`.
+```json
+{
+  "type": "button",
+  "seq": 22,
+  "ts": 1762387200,
+  "slot": 1,
+  "button": "VolumeUp",
+  "action": "press",
+  "source": "elite_rf",
+  "deviceId": "70321456",
+  "command": "VolumeUp"
+}
 ```
 
 ---

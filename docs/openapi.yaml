@@ -1495,13 +1495,13 @@ paths:
               properties:
                 deviceId: {type: string}
                 device: {type: string}
+                button: {type: string, description: "Physical key name (hub_rf). When present, command is the device command the key was mapped to."}
                 command: {type: string}
                 source: {type: string}
-                action: {type: string}
+                action: {type: string, enum: [press, hold, release], description: "press and release give a button event on the WebSocket; hold repeats do not"}
                 topic: {type: string}
                 pulseMs: {type: integer, default: 100}
                 slot: {type: integer, enum: [1, 2], default: 1}
-              required: [command]
             example:
               deviceId: "70321456"
               command: VolumeUp

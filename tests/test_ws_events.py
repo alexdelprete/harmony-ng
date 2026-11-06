@@ -2,7 +2,7 @@
 """
 WebSocket event tests against hub_daemon_test (spec docs/HA_INTEGRATION_FIRMWARE_SPEC.md,
 milestone 1): activity_state and activity_progress on an activity switch (3.2), config_changed
-and bt_status from the state watcher (3.3).
+and bt_status from the state watcher (3.3), button events from /api/button-press (3.4).
 
 Usage: python3 tests/test_ws_events.py            (builds hub_daemon_test if missing)
 Pure stdlib; the daemon runs on a temporary mock root with tests/fixtures/ha/sample_config.
@@ -138,10 +138,51 @@ def test_state_watcher(hub):
     ws.close()
 
 
+def test_button_events(hub):
+    print("[-] 3.4 button events from POST /api/button-press")
+    ws = hub.ws()
+    time.sleep(0.2)
+    ws.drain(0.3)
+    # What hub_rf posts for a mapped key: press, two hold repeats, release
+    posts = [
+        {"button": "VolumeUp", "action": "press", "source": "elite_rf", "slot": 1, "deviceId": "1", "command": "VolumeUp"},
+        {"button": "VolumeUp", "action": "hold", "source": "elite_rf", "slot": 1, "deviceId": "1", "command": "VolumeUp"},
+        {"button": "VolumeUp", "action": "hold", "source": "elite_rf", "slot": 1, "deviceId": "1", "command": "VolumeUp"},
+        {"button": "VolumeUp", "action": "release", "source": "elite_rf", "slot": 1, "deviceId": "1", "command": "VolumeUp"},
+    ]
+    codes = []
+    for p in posts:
+        st, _ = hub.http_post("/api/button-press", p)
+        codes.append(st)
+    # Without a broker the MQTT mirror answers 503; the event does not depend on it
+    check(all(c in (200, 503) for c in codes), "posts accepted (%s)" % codes)
+    time.sleep(0.5)
+    events = [m for m in ws.drain(0.5) if m.get("type") == "button"]
+    check(len(events) == 2, "press and release give two button events, holds none (%d)" % len(events), str(events))
+    if len(events) == 2:
+        press, release = events
+        check(press.get("action") == "press" and release.get("action") == "release", "actions in order", str(events))
+        check(press.get("button") == "VolumeUp" and press.get("slot") == 1 and press.get("source") == "elite_rf",
+              "button, slot and source", str(press))
+        check(press.get("deviceId") == "1" and press.get("command") == "VolumeUp", "mapped target", str(press))
+        check(press["seq"] < release["seq"], "seq order")
+    # An unmapped key: no deviceId/command
+    st, _ = hub.http_post("/api/button-press", {"button": "Menu", "action": "press", "source": "elite_rf", "slot": 2})
+    msg, _ = ws.wait_for("button", 3)
+    check(msg is not None and msg.get("button") == "Menu" and msg.get("slot") == 2 and "deviceId" not in msg and "command" not in msg,
+          "unmapped key has no target", str(msg))
+    # Missing key name: 400 and no event
+    st, _ = hub.http_post("/api/button-press", {"action": "press", "source": "elite_rf"})
+    check(st == 400, "400 without a key name (%s)" % st)
+    check([m for m in ws.drain(0.5) if m.get("type") == "button"] == [], "no event on 400")
+    ws.close()
+
+
 def main():
     with HubHarness(port=PORT) as hub:
         test_activity_switch(hub)
         test_state_watcher(hub)
+        test_button_events(hub)
     print("\n%d passed, %d failed" % (g_passed, g_failed))
     return 1 if g_failed else 0
 
