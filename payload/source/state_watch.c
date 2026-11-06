@@ -140,6 +140,31 @@ typedef struct {
     int seen;
 } watched_file_t;
 
+static const watched_file_t k_watched_files[] = {
+    { "devices", HARMONY_DEVICES_FILE, 0, 0, 0 },
+    { "activities", HARMONY_ACTIVITIES_FILE, 0, 0, 0 },
+    { "settings", HARMONY_SETTINGS_FILE, 0, 0, 0 },
+    { "remote_map", HARMONY_DIR "/remote_slot1_map.json", 0, 0, 0 },
+    { "remote_map", HARMONY_DIR "/remote_slot2_map.json", 0, 0, 0 },
+};
+#define N_WATCHED_FILES (sizeof(k_watched_files) / sizeof(k_watched_files[0]))
+
+cJSON *state_watch_config_mtimes(void) {
+    cJSON *obj = cJSON_CreateObject();
+    if (!obj) return NULL;
+    for (size_t i = 0; i < N_WATCHED_FILES; i++) {
+        struct stat st;
+        double mt = (stat(k_watched_files[i].path, &st) == 0) ? (double)st.st_mtime : 0;
+        cJSON *cur = cJSON_GetObjectItemCaseSensitive(obj, k_watched_files[i].name);
+        if (cur) {
+            if (mt > cur->valuedouble) cJSON_SetNumberValue(cur, mt);
+        } else {
+            cJSON_AddNumberToObject(obj, k_watched_files[i].name, mt);
+        }
+    }
+    return obj;
+}
+
 static const char *const k_rf_drop_slot[] = { "link", NULL };
 static char *g_last_rf = NULL;
 static pthread_mutex_t g_rf_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -155,14 +180,9 @@ int state_watch_offer_rf_status(cJSON *obj) {
 static void *state_watch_thread(void *arg) {
     (void)arg;
     static const char *const bt_drop[] = { "last_button", "last_seen", "updated", NULL };
-    watched_file_t files[] = {
-        { "devices", HARMONY_DEVICES_FILE, 0, 0, 0 },
-        { "activities", HARMONY_ACTIVITIES_FILE, 0, 0, 0 },
-        { "settings", HARMONY_SETTINGS_FILE, 0, 0, 0 },
-        { "remote_map", HARMONY_DIR "/remote_slot1_map.json", 0, 0, 0 },
-        { "remote_map", HARMONY_DIR "/remote_slot2_map.json", 0, 0, 0 },
-    };
-    const size_t nfiles = sizeof(files) / sizeof(files[0]);
+    watched_file_t files[N_WATCHED_FILES];
+    memcpy(files, k_watched_files, sizeof(files));
+    const size_t nfiles = N_WATCHED_FILES;
     char *last_bt = NULL;
     int rf_baseline = 0;
 

@@ -14,6 +14,7 @@ static int g_hub_id_fallback = 1;
 /* Flags added by each item of the spec as it lands (2.2) */
 static const char *const k_capabilities[] = {
     "events",
+    "snapshot",
     "ws_auth",
     "rf_wake",
     NULL

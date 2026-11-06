@@ -43,6 +43,9 @@ int ws_read_frame(int client_fd, char *out_buf, size_t max_len, int *out_opcode)
 
 /* Retrieve active client socket descriptors for event loop polling */
 int ws_get_clients(int *out_fds, size_t max_count);
+/* Clients that upgraded since the last call and have not received their snapshot yet: they are
+ * excluded from broadcasts until taken here (main loop). Returns the count. */
+int ws_take_pending_clients(int *out_fds, size_t max_count);
 
 /* Send a pong frame responding to ping */
 int ws_send_pong(int client_fd);

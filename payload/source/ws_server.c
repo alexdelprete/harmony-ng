@@ -14,6 +14,9 @@
 
 static int g_clients[WS_MAX_CLIENTS];
 static int g_client_roles[WS_MAX_CLIENTS];
+/* 1 until the main loop sent the client its snapshot: broadcasts skip it meanwhile, so the
+ * snapshot is the first frame the client receives */
+static int g_client_pending[WS_MAX_CLIENTS];
 static size_t g_client_count = 0;
 /* Clients are added from HTTP worker threads, polled and removed by the main loop, and sent to
  * from the orchestrator, HTTP and state watcher threads: guard the list, and serialize frame
@@ -157,6 +160,7 @@ static int add_client(int fd) {
         if (g_clients[i] < 0) {
             g_clients[i] = fd;
             g_client_roles[i] = 2; /* admin until the upgrade records the token's role */
+            g_client_pending[i] = 1;
             g_client_count++;
             rc = 0;
             break;
@@ -296,12 +300,31 @@ int ws_send_text(int client_fd, const char *text) {
 void ws_broadcast_text(const char *text) {
     if (!text) return;
     int fds[WS_MAX_CLIENTS];
-    int n = ws_get_clients(fds, WS_MAX_CLIENTS);
+    int n = 0;
+    pthread_mutex_lock(&g_clients_lock);
+    for (size_t i = 0; i < WS_MAX_CLIENTS; i++) {
+        if (g_clients[i] >= 0 && !g_client_pending[i]) fds[n++] = g_clients[i];
+    }
+    pthread_mutex_unlock(&g_clients_lock);
     for (int i = 0; i < n; i++) {
         if (ws_send_text(fds[i], text) != 0) {
             ws_remove_client(fds[i]);
         }
     }
+}
+
+int ws_take_pending_clients(int *out_fds, size_t max_count) {
+    if (!out_fds || max_count == 0) return 0;
+    size_t count = 0;
+    pthread_mutex_lock(&g_clients_lock);
+    for (size_t i = 0; i < WS_MAX_CLIENTS && count < max_count; i++) {
+        if (g_clients[i] >= 0 && g_client_pending[i]) {
+            g_client_pending[i] = 0;
+            out_fds[count++] = g_clients[i];
+        }
+    }
+    pthread_mutex_unlock(&g_clients_lock);
+    return (int)count;
 }
 
 int ws_read_frame(int client_fd, char *out_buf, size_t max_len, int *out_opcode) {

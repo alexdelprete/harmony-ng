@@ -2,7 +2,10 @@
 #include "hub_ws.h"
 #include "ws_server.h"
 #include "hub_events.h"
+#include "hub_info.h"
 #include "http_auth.h"
+#include "state_watch.h"
+#include "config_store.h"
 #include "hub_mqtt.h"
 #include "orchestrator.h"
 #include "hw_action.h"
@@ -14,6 +17,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <strings.h>
+#include <time.h>
 
 /* Bus sink: every event goes to every WebSocket client as it is (type, seq, ts added by the bus) */
 void hub_ws_event_sink(const hub_event_t *ev, void *user) {
@@ -23,6 +27,86 @@ void hub_ws_event_sink(const hub_event_t *ev, void *user) {
     if (!txt) return;
     ws_broadcast_text(txt);
     free(txt);
+}
+
+/* The activity_state object as the bus last emitted it, or built from the orchestrator */
+static cJSON *snapshot_activity_state(void) {
+    const cJSON *last = hub_events_last(HUB_EV_ACTIVITY_STATE);
+    if (last) return cJSON_Duplicate(last, 1);
+    cJSON *st = cJSON_CreateObject();
+    if (!st) return NULL;
+    orch_state_t s = orch_get_state();
+    cJSON_AddStringToObject(st, "type", "activity_state");
+    cJSON_AddStringToObject(st, "activity", orch_get_current_activity());
+    cJSON_AddNumberToObject(st, "state", (int)s);
+    cJSON_AddStringToObject(st, "stateName", s == ORCH_STATE_STARTING ? "starting" :
+                                             s == ORCH_STATE_RUNNING ? "running" :
+                                             s == ORCH_STATE_STOPPING ? "stopping" : "idle");
+    cJSON_AddBoolToObject(st, "busy", orch_is_busy() ? 1 : 0);
+    cJSON_AddBoolToObject(st, "sending", orch_is_sending() ? 1 : 0);
+    return st;
+}
+
+/* Full state snapshot (spec 3.9): hub identity, the last activity_state / bt_status / rf_status
+ * payloads seen on the bus (null before the first one), the config file mtimes and the bus seq.
+ * Main loop only (hub_events_last). */
+static char *build_snapshot(int msg_id) {
+    cJSON *root = cJSON_CreateObject();
+    if (!root) return NULL;
+    cJSON_AddStringToObject(root, "type", "snapshot");
+    if (msg_id) cJSON_AddNumberToObject(root, "msgId", msg_id);
+
+    cJSON *hub = cJSON_CreateObject();
+    struct hub_settings cs;
+    config_store_get_settings(&cs);
+    cJSON_AddStringToObject(hub, "hub_id", hub_info_id());
+    cJSON_AddStringToObject(hub, "hub_name", cs.hub_name[0] ? cs.hub_name : "Harmony Hub");
+    hub_info_add_status_fields(hub);
+    cJSON_DeleteItemFromObjectCaseSensitive(hub, "commit");
+    int auth_on = 0;
+    load_user_accounts(NULL, 0, &auth_on);
+    cJSON_AddBoolToObject(hub, "auth_enabled", auth_on);
+    FILE *uf = fopen("/proc/uptime", "r");
+    double up_sec = 0;
+    if (uf) {
+        if (fscanf(uf, "%lf", &up_sec) != 1) up_sec = 0;
+        fclose(uf);
+    }
+    cJSON_AddNumberToObject(hub, "uptime_sec", (double)(long)up_sec);
+    cJSON_AddItemToObject(root, "hub", hub);
+
+    cJSON *act = snapshot_activity_state();
+    if (act) cJSON_AddItemToObject(root, "activity_state", act);
+    const cJSON *bt = hub_events_last(HUB_EV_BT_STATUS);
+    if (bt) cJSON_AddItemToObject(root, "bt_status", cJSON_Duplicate(bt, 1));
+    else cJSON_AddNullToObject(root, "bt_status");
+    const cJSON *rf = hub_events_last(HUB_EV_RF_STATUS);
+    if (rf) cJSON_AddItemToObject(root, "rf_status", cJSON_Duplicate(rf, 1));
+    else cJSON_AddNullToObject(root, "rf_status");
+
+    cJSON *cfg = cJSON_CreateObject();
+    cJSON *files = state_watch_config_mtimes();
+    if (files) cJSON_AddItemToObject(cfg, "files", files);
+    cJSON_AddItemToObject(root, "config", cfg);
+
+    cJSON_AddNumberToObject(root, "seq", (double)hub_events_last_seq());
+    cJSON_AddNumberToObject(root, "ts", (double)time(NULL));
+    char *txt = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return txt;
+}
+
+static void send_snapshot(int cfd, int msg_id) {
+    char *txt = build_snapshot(msg_id);
+    if (!txt) return;
+    if (ws_send_text(cfd, txt) != 0) ws_remove_client(cfd);
+    free(txt);
+}
+
+void hub_ws_tick(void) {
+    int fds[WS_MAX_CLIENTS];
+    int n = ws_take_pending_clients(fds, WS_MAX_CLIENTS);
+    for (int i = 0; i < n; i++) send_snapshot(fds[i], 0);
 }
 
 void on_orch_progress(const char *activity_id, orch_state_t state,
@@ -138,6 +222,9 @@ void handle_ws_client_message(int cfd) {
             ws_send_text(cfd, str);
             free(str);
         }
+    }
+    else if (strcmp(action, "get_snapshot") == 0) {
+        send_snapshot(cfd, msg_id);
     }
     else if (strcmp(action, "send_command") == 0 || strcmp(action, "ir_send") == 0) {
         cJSON *dev_j = cJSON_GetObjectItemCaseSensitive(root, "deviceId");

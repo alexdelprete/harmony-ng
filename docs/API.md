@@ -1072,6 +1072,16 @@ Connect via WebSocket to `ws://<hub_ip>:8089/ws` or `ws://<hub_ip>/ws`.
 }
 ```
 
+#### 10.8a Full State Snapshot
+```json
+{
+  "action": "get_snapshot",
+  "msgId": 8
+}
+```
+**Response**: a `snapshot` message (10.14) with the same `msgId`. One is also sent, without
+`msgId`, as the first frame after the upgrade.
+
 #### 10.3 Send Device Command
 ```json
 {
@@ -1249,6 +1259,30 @@ current activity, absent when the key was not mapped to a device command. Calls 
   "source": "elite_rf",
   "deviceId": "70321456",
   "command": "VolumeUp"
+}
+```
+
+#### 10.14 Snapshot
+The first frame a client receives after the upgrade, and the reply to `get_snapshot` (10.8a).
+`activity_state`, `bt_status` and `rf_status` are the last payloads pushed for those types
+(`null` before the first one; `activity_state` is built from the orchestrator if needed).
+`config.files` holds the mtimes (Unix seconds) the watcher tracks, so a client can tell whether its
+cached inventory is stale. `seq` is the bus sequence at the time of the snapshot: a client that
+stored the last `seq` it processed can tell whether it missed events while disconnected and
+refetch over REST. The frame can exceed 4 KB (outbound frames may be up to 64 KB).
+```json
+{
+  "type": "snapshot",
+  "msgId": 8,
+  "hub": {"hub_id": "20140101120000-000001", "hub_name": "Living Room Hub", "version": "2.2.0",
+          "api_version": 2, "capabilities": ["events", "snapshot", "ws_auth", "ws_keepalive", "ir_raw", "rf_wake"],
+          "auth_enabled": false, "uptime_sec": 34821, "legacy_enabled": false, "mdns_enabled": false},
+  "activity_state": {"type": "activity_state", "activity": "-1", "state": 0, "stateName": "idle", "busy": false, "sending": false, "seq": 3, "ts": 1762387100},
+  "bt_status": {"type": "bt_status", "seq": 20, "ts": 1762387200, "...": "..."},
+  "rf_status": {"type": "rf_status", "seq": 21, "ts": 1762387200, "...": "..."},
+  "config": {"files": {"devices": 1762387000, "activities": 1762387000, "settings": 1762380000, "remote_map": 1762387000}},
+  "seq": 42,
+  "ts": 1762387200
 }
 ```
 

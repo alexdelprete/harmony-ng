@@ -238,6 +238,8 @@ int main(int argc, char **argv) {
         orch_tick();
         /* Deliver queued events to the sinks (WebSocket, later MQTT) on this thread */
         hub_events_dispatch();
+        /* Snapshot for clients that upgraded since the last iteration */
+        hub_ws_tick();
         mqtt_cmd_tick();
 
         /* Tick SNTP network time sync */

@@ -2,7 +2,8 @@
 """
 WebSocket event tests against hub_daemon_test (spec docs/HA_INTEGRATION_FIRMWARE_SPEC.md,
 milestone 1): activity_state and activity_progress on an activity switch (3.2), config_changed
-and bt_status from the state watcher (3.3), button events from /api/button-press (3.4), rf_status from hub_rf's push to /api/rf/status-changed (3.5).
+and bt_status from the state watcher (3.3), button events from /api/button-press (3.4), rf_status from hub_rf's push to /api/rf/status-changed (3.5), the snapshot on connect and on
+get_snapshot (3.9).
 
 Usage: python3 tests/test_ws_events.py            (builds hub_daemon_test if missing)
 Pure stdlib; the daemon runs on a temporary mock root with tests/fixtures/ha/sample_config.
@@ -221,12 +222,60 @@ def test_rf_status_push(hub):
     ws.close()
 
 
+def test_snapshot(hub):
+    print("[-] 3.9 snapshot as the first frame and on get_snapshot")
+    ws = hub.ws()
+    first = ws.recv_json(5)
+    check(first is not None and first.get("type") == "snapshot", "first frame is the snapshot", str(first))
+    if first:
+        hubo = first.get("hub", {})
+        for k in ("hub_id", "hub_name", "version", "api_version", "capabilities", "auth_enabled", "uptime_sec",
+                  "legacy_enabled", "mdns_enabled"):
+            check(k in hubo, "hub.%s present" % k, str(hubo))
+        check("commit" not in hubo, "hub has no commit (status only)", str(hubo))
+        check(hubo.get("api_version") == 2 and "snapshot" in hubo.get("capabilities", []), "api_version 2, snapshot flag", str(hubo))
+        act = first.get("activity_state", {})
+        check(act.get("type") == "activity_state" and act.get("activity") == "-1" and act.get("state") == 0,
+              "activity_state idle after the earlier power off", str(act))
+        check(first.get("bt_status", {}).get("type") == "bt_status" or first.get("bt_status") is None,
+              "bt_status is the last payload or null", str(first.get("bt_status")))
+        check(first.get("rf_status", {}).get("type") == "rf_status", "rf_status is the last pushed payload", str(first.get("rf_status")))
+        files = first.get("config", {}).get("files", {})
+        check(all(isinstance(files.get(k), int) for k in ("devices", "activities", "settings", "remote_map")),
+              "config.files mtimes", str(files))
+        check(files.get("devices", 0) > 0 and files.get("remote_map", 0) > 0, "mtimes of present files are set", str(files))
+        check(isinstance(first.get("seq"), int) and isinstance(first.get("ts"), int), "seq and ts", str(first))
+        check("msgId" not in first, "no msgId on the initial snapshot")
+    # get_snapshot with msgId
+    ws.send_json({"action": "get_snapshot", "msgId": 77})
+    snap, frames = ws.wait_for("snapshot", 5, lambda m: m.get("msgId") == 77)
+    check(snap is not None, "get_snapshot answered with msgId 77", str(frames))
+    if snap and first:
+        check(snap.get("seq") >= first.get("seq"), "seq did not go back")
+    # the snapshot follows the state: switch, then get_snapshot shows running 11
+    st, _ = hub.http_post("/api/activity", {"activity": "11"})
+    ws.wait_for("activity_state", 10, lambda m: m.get("state") == 2 and m.get("activity") == "11")
+    ws.send_json({"action": "get_snapshot", "msgId": 78})
+    snap, _ = ws.wait_for("snapshot", 5, lambda m: m.get("msgId") == 78)
+    check(snap is not None and snap.get("activity_state", {}).get("activity") == "11", "snapshot carries the last activity_state", str(snap))
+    hub.http_post("/api/poweroff", {})
+    ws.wait_for("activity_state", 10, lambda m: m.get("state") == 0)
+    # a second client's first frame is also a snapshot, while the first keeps getting events
+    ws2 = hub.ws()
+    f2 = ws2.recv_json(5)
+    check(f2 is not None and f2.get("type") == "snapshot" and f2.get("activity_state", {}).get("activity") == "-1",
+          "second client: snapshot first, idle", str(f2))
+    ws2.close()
+    ws.close()
+
+
 def main():
     with HubHarness(port=PORT) as hub:
         test_activity_switch(hub)
         test_state_watcher(hub)
         test_button_events(hub)
         test_rf_status_push(hub)
+        test_snapshot(hub)
     print("\n%d passed, %d failed" % (g_passed, g_failed))
     return 1 if g_failed else 0
 

@@ -16,6 +16,10 @@ int state_watch_start(void);
  * Returns 1 when an event was emitted. */
 int state_watch_offer_rf_status(cJSON *obj);
 
+/* New object {"devices": mtime, "activities": mtime, "settings": mtime, "remote_map": mtime}
+ * (Unix seconds, 0 when a file is missing; remote_map = the newest slot map) for the snapshot */
+cJSON *state_watch_config_mtimes(void);
+
 #ifdef __cplusplus
 }
 #endif
