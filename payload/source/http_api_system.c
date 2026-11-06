@@ -621,6 +621,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         cJSON_AddStringToObject(resp, "timezone", s.timezone[0] ? s.timezone : "UTC");
         cJSON_AddStringToObject(resp, "led_mode", s.led_mode[0] ? s.led_mode : "always_on");
         cJSON_AddBoolToObject(resp, "mdns_enabled", s.mdns_enabled ? 1 : 0);
+        cJSON_AddBoolToObject(resp, "legacy_enabled", s.legacy_enabled ? 1 : 0);
         send_cjson_resp(client_fd, 200, resp);
         cJSON_Delete(resp);
         close(client_fd);
@@ -664,6 +665,11 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
                 if (cJSON_IsBool(item)) s.mdns_enabled = cJSON_IsTrue(item) ? 1 : 0;
                 else if (cJSON_IsNumber(item)) s.mdns_enabled = item->valueint ? 1 : 0;
             }
+            item = cJSON_GetObjectItemCaseSensitive(p, "legacy_enabled");
+            if (item) {
+                if (cJSON_IsBool(item)) s.legacy_enabled = cJSON_IsTrue(item) ? 1 : 0;
+                else if (cJSON_IsNumber(item)) s.legacy_enabled = item->valueint ? 1 : 0;
+            }
             config_store_save_settings(&s);
             apply_hub_settings(&s);
             cJSON_Delete(p);
@@ -676,6 +682,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         cJSON_AddStringToObject(resp, "timezone", s.timezone[0] ? s.timezone : "UTC");
         cJSON_AddStringToObject(resp, "led_mode", s.led_mode[0] ? s.led_mode : "always_on");
         cJSON_AddBoolToObject(resp, "mdns_enabled", s.mdns_enabled ? 1 : 0);
+        cJSON_AddBoolToObject(resp, "legacy_enabled", s.legacy_enabled ? 1 : 0);
         send_cjson_resp(client_fd, 200, resp);
         cJSON_Delete(resp);
         close(client_fd);

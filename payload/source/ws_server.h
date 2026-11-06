@@ -56,6 +56,16 @@ int ws_get_clients(int *out_fds, size_t max_count);
 /* Clients that upgraded since the last call and have not received their snapshot yet: they are
  * excluded from broadcasts until taken here (main loop). Returns the count. */
 int ws_take_pending_clients(int *out_fds, size_t max_count);
+/* Legacy (Logitech protocol, port 8088) clients share the table but never receive the 8089
+ * broadcasts; hbus_server.c talks to them. */
+void ws_set_client_legacy(int client_fd, int legacy);
+int ws_is_client_legacy(int client_fd);
+/* Text frame to every legacy client */
+void ws_broadcast_legacy_text(const char *text);
+/* Close and remove every legacy client (the setting was turned off) */
+void ws_close_legacy_clients(void);
+/* SHA-1 of a buffer (the handshake's engine), for the SSDP UUID */
+void ws_sha1(const uint8_t *data, size_t len, uint8_t digest[20]);
 /* Keepalive, main loop once per iteration: pings idle clients, drops the ones that did not
  * answer. Returns the number of clients dropped. */
 int ws_server_tick(void);
