@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
 WebSocket event tests against hub_daemon_test (spec docs/HA_INTEGRATION_FIRMWARE_SPEC.md,
-milestone 1): activity_state and activity_progress on an activity switch (3.2).
+milestone 1): activity_state and activity_progress on an activity switch (3.2), config_changed
+and bt_status from the state watcher (3.3).
 
 Usage: python3 tests/test_ws_events.py            (builds hub_daemon_test if missing)
 Pure stdlib; the daemon runs on a temporary mock root with tests/fixtures/ha/sample_config.
 """
 
+import json
 import os
 import sys
 import time
@@ -80,9 +82,66 @@ def test_activity_switch(hub):
     ws.close()
 
 
+BT_STATUS_FILE = "/tmp/hub_btstack_status.json"
+
+
+def test_state_watcher(hub):
+    print("[-] 3.3 config_changed and bt_status from the state watcher")
+    ws = hub.ws()
+    time.sleep(1.5)  # let the watcher take its baselines
+    ws.drain(0.3)
+    devices = os.path.join(hub.data_dir, "config", "devices.json")
+    check(os.path.exists(devices), "sample devices.json under the mock root", devices)
+    # Same content, newer mtime: the watcher compares mtime and size
+    os.utime(devices, (time.time() + 5, time.time() + 5))
+    msg, frames = ws.wait_for("config_changed", 5)
+    check(msg is not None and msg.get("files") == ["devices"], "config_changed [devices]", str(frames))
+    check(msg is not None and isinstance(msg.get("ts"), int), "config_changed carries ts", str(msg))
+    extra = [m for m in ws.drain(1.5) if m.get("type") == "config_changed"]
+    check(extra == [], "exactly one config_changed", str(extra))
+
+    # Bluetooth: hub_btstack's status file appears (written atomically)
+    bt = {"ok": True, "running": True, "connected": True, "target": "AA:BB:CC:DD:EE:FF",
+          "last_button": "KEY_ENTER", "last_seen": 1, "updated": 1,
+          "hosts": [{"addr": "AA:BB:CC:DD:EE:FF", "name": "Test Host", "connected": True, "paired": True}]}
+    tmp = BT_STATUS_FILE + ".tmp"
+    try:
+        with open(tmp, "w") as f:
+            json.dump(bt, f)
+        os.replace(tmp, BT_STATUS_FILE)
+        msg, frames = ws.wait_for("bt_status", 5)
+        check(msg is not None and msg.get("connected") is True and msg.get("target") == "AA:BB:CC:DD:EE:FF",
+              "bt_status with the file's content", str(frames))
+        # Only volatile fields change: no new event
+        bt["last_button"] = "KEY_UP"
+        bt["last_seen"] = 2
+        bt["updated"] = 2
+        with open(tmp, "w") as f:
+            json.dump(bt, f)
+        os.replace(tmp, BT_STATUS_FILE)
+        extra = [m for m in ws.drain(1.5) if m.get("type") == "bt_status"]
+        check(extra == [], "volatile fields do not count as a change", str(extra))
+        # A real change does
+        bt["connected"] = False
+        bt["hosts"][0]["connected"] = False
+        with open(tmp, "w") as f:
+            json.dump(bt, f)
+        os.replace(tmp, BT_STATUS_FILE)
+        msg, frames = ws.wait_for("bt_status", 5)
+        check(msg is not None and msg.get("connected") is False, "bt_status on a real change", str(frames))
+    finally:
+        for p in (tmp, BT_STATUS_FILE):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+    ws.close()
+
+
 def main():
     with HubHarness(port=PORT) as hub:
         test_activity_switch(hub)
+        test_state_watcher(hub)
     print("\n%d passed, %d failed" % (g_passed, g_failed))
     return 1 if g_failed else 0
 

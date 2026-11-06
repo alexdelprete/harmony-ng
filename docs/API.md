@@ -1182,6 +1182,28 @@ One frame per executed step of an activity switch (unchanged shape, now carrying
 }
 ```
 
+#### 10.10 Configuration Changed
+Sent when a configuration file changed on disk (checked once a second by mtime and size):
+`devices`, `activities`, `settings` or `remote_map` (either slot's button map). Reload the
+affected inventory over REST.
+```json
+{"type": "config_changed", "seq": 19, "ts": 1762387200, "files": ["devices"]}
+```
+
+#### 10.11 Bluetooth Status
+The `GET /api/bt-status` object, sent when it changes (`last_button`, `last_seen` and `updated`
+do not count as a change).
+```json
+{"type": "bt_status", "seq": 20, "ts": 1762387200, "ok": true, "running": true, "connected": true, "target": "AA:BB:CC:DD:EE:FF", "hosts": [ ... ]}
+```
+
+#### 10.12 RF Remote Status
+The `GET /api/rf/status` object (section 7.1), sent when it changes (the `link` counters and
+`battery.voltage_mv` do not count as a change, but are included).
+```json
+{"type": "rf_status", "seq": 21, "ts": 1762387200, "ok": true, "slots": [ ... ]}
+```
+
 ---
 
 ## 11. Authentication & Security Architecture

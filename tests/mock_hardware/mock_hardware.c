@@ -26,6 +26,8 @@ static void *(*real_mmap)(void *addr, size_t length, int prot, int flags, int fd
 static FILE *(*real_fopen)(const char *path, const char *mode) = NULL;
 static FILE *(*real_fopen64)(const char *path, const char *mode) = NULL;
 static int (*real_unlink)(const char *pathname) = NULL;
+static int (*real_stat)(const char *pathname, struct stat *st) = NULL;
+static int (*real_xstat)(int ver, const char *pathname, struct stat *st) = NULL;
 
 static int g_fb_mock_fd = -1;
 static int g_touch_mock_fd = -1;
@@ -43,6 +45,8 @@ static void init_real_functions(void) {
         real_fopen = dlsym(RTLD_NEXT, "fopen");
         real_fopen64 = dlsym(RTLD_NEXT, "fopen64");
         real_unlink = dlsym(RTLD_NEXT, "unlink");
+        real_stat = dlsym(RTLD_NEXT, "stat");
+        real_xstat = dlsym(RTLD_NEXT, "__xstat");
         if (!real_open64) real_open64 = real_open;
         if (!real_fopen64) real_fopen64 = real_fopen;
     }
@@ -188,6 +192,30 @@ static const char *resolve_mock_path(const char *pathname, char *resolved, size_
     }
 
     return pathname;
+}
+
+/* stat() of a virtualized /data path (hub_daemon's state watcher polls config file mtimes).
+ * glibc >= 2.33 exports stat as a real symbol; older ones route it through __xstat. */
+static int mock_stat_impl(const char *pathname, struct stat *st, int ver) {
+    init_real_functions();
+    char resolved[512];
+    int special_type = 0;
+    const char *target = pathname;
+    if (pathname && strncmp(pathname, "/data/", 6) == 0) {
+        target = resolve_mock_path(pathname, resolved, sizeof(resolved), &special_type);
+    }
+    if (real_stat) return real_stat(target, st);
+    if (real_xstat) return real_xstat(ver, target, st);
+    errno = ENOSYS;
+    return -1;
+}
+
+int stat(const char *pathname, struct stat *st) {
+    return mock_stat_impl(pathname, st, 1);
+}
+
+int __xstat(int ver, const char *pathname, struct stat *st) {
+    return mock_stat_impl(pathname, st, ver);
 }
 
 int unlink(const char *pathname) {

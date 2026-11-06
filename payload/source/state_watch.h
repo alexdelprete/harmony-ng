@@ -5,8 +5,8 @@
 extern "C" {
 #endif
 
-/* Start the thread that pushes bt_status, rf_status and config_changed messages to
- * WebSocket clients when that state changes. Returns 0 on success. */
+/* Start the thread that emits bt_status, rf_status and config_changed events on the bus
+ * when that state changes. Returns 0 on success. */
 int state_watch_start(void);
 
 #ifdef __cplusplus
