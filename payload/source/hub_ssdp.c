@@ -25,6 +25,7 @@ static int g_port = SSDP_PORT;
 static int g_shim_port = 8088;
 static int g_enabled;
 static int g_initialized;
+static int g_disabled;
 static struct hub_settings g_settings;
 static int g_have_settings;
 static char g_uuid[40] = "";
@@ -196,6 +197,13 @@ static void stop(void) {
 }
 
 int hub_ssdp_init(int port, int shim_port) {
+    /* port 0 (test harness --ssdp-port 0) keeps the responder off for good: a test instance
+     * must never announce itself on the real multicast group of the network it runs on */
+    if (port == 0) {
+        g_disabled = 1;
+        g_initialized = 1;
+        return 0;
+    }
     g_port = port > 0 ? port : SSDP_PORT;
     g_shim_port = shim_port > 0 ? shim_port : 8088;
     g_initialized = 1;
@@ -220,7 +228,7 @@ void hub_ssdp_apply_settings(const struct hub_settings *s) {
     if (!s) return;
     g_settings = *s;
     g_have_settings = 1;
-    if (!g_initialized) return;
+    if (!g_initialized || g_disabled) return;
     g_enabled = s->legacy_enabled;
     if (g_enabled) start();
     else stop();

@@ -19,7 +19,7 @@ extern "C" {
 #define SSDP_GROUP  "239.255.255.250"
 #define SSDP_URN    "urn:myharmony-com:device:harmony:1"
 
-/* port: SSDP_PORT or a test port; shim_port: where /description is served (8088 or a test port) */
+/* port: SSDP_PORT, a test port, or 0 = responder off (harness); shim_port: where /description is served */
 int hub_ssdp_init(int port, int shim_port);
 int hub_ssdp_fd(void);
 void hub_ssdp_handle(void);
