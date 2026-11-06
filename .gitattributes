@@ -21,3 +21,4 @@ payload/bin/register_ehci binary
 payload/modules/*.ko binary
 tools/unbrick_recovery/** binary
 *.cmd text eol=crlf
+tests/fixtures/ha/ssdp_response.txt -text
