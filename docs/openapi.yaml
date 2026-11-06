@@ -89,6 +89,50 @@ paths:
           description: Switching protocols to WebSocket
         '401':
           description: Authentication enabled and no valid token
+      x-websocket-messages:
+        description: |
+          Messages on the socket after the upgrade (docs/API.md section 10). Client messages are
+          JSON objects with "action" and an optional "msgId" echoed in the reply. Pushed messages
+          carry "type", "seq" (sequence number, from 1 per daemon run) and "ts" (Unix seconds);
+          nothing is replayed to a client that connects later, the snapshot is its first frame.
+        client:
+          ping: {reply: pong}
+          get_state: {reply: activity_state}
+          get_snapshot: {reply: snapshot}
+          send_command: {reply: ack, fields: [deviceId, command, cmdAction]}
+          start_activity: {reply: ack, fields: [id]}
+          stop_activity: {reply: ack}
+          cancel_activity: {reply: ack}
+          bt_key: {reply: ack}
+          bt_text: {reply: ack}
+          bt_mouse: {reply: ack}
+        pushed:
+          activity_state:
+            example: {type: activity_state, seq: 17, ts: 1762387200, activity: "123456", state: 2, stateName: running, busy: false, sending: true}
+          activity_progress:
+            example: {type: activity_progress, seq: 18, ts: 1762387200, activity: "123456", activityId: "123456", state: starting, stateCode: 1, step: 2, currentStep: 2, total: 6, totalSteps: 6, desc: TV PowerOn, stepDesc: TV PowerOn}
+          config_changed:
+            example: {type: config_changed, seq: 19, ts: 1762387200, files: [devices]}
+          bt_status:
+            description: The GET /api/bt-status object when it changed
+            example: {type: bt_status, seq: 20, ts: 1762387200, ok: true, running: true, connected: true, target: "AA:BB:CC:DD:EE:FF", hosts: []}
+          rf_status:
+            description: The GET /api/rf/status object when it changed (link counters and battery.voltage_mv are not changes)
+            example: {type: rf_status, seq: 21, ts: 1762387200, ok: true, slots: []}
+          button:
+            description: First press and release of a physical key on an RF remote, with the mapped device command when any
+            example: {type: button, seq: 22, ts: 1762387200, slot: 1, button: VolumeUp, action: press, source: elite_rf, deviceId: "70321456", command: VolumeUp}
+          snapshot:
+            description: First frame after the upgrade and the reply to get_snapshot
+            example:
+              type: snapshot
+              hub: {hub_id: "20140101120000-000001", hub_name: Living Room Hub, version: 2.2.0, api_version: 2, capabilities: [events, snapshot, ws_auth, ws_keepalive, ir_raw, rf_wake], auth_enabled: false, uptime_sec: 34821, legacy_enabled: false, mdns_enabled: false}
+              activity_state: {type: activity_state, activity: "-1", state: 0, stateName: idle, busy: false, sending: false, seq: 3, ts: 1762387100}
+              bt_status: null
+              rf_status: null
+              config: {files: {devices: 1762387000, activities: 1762387000, settings: 1762380000, remote_map: 1762387000}}
+              seq: 42
+              ts: 1762387200
 
   /api/status:
     get:
@@ -1227,7 +1271,9 @@ paths:
       tags:
         - Activities
       summary: Answer help power toggle prompt
-      description: Answers the question for one device of the last Help. "on": false sends that device's power toggle; "on": true sends nothing. Each device takes one answer.
+      description: |
+        Answers the question for one device of the last Help. "on": false sends that device's
+        power toggle; "on": true sends nothing. Each device takes one answer.
       requestBody:
         required: true
         content:
