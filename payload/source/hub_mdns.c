@@ -314,6 +314,12 @@ static void active_ip(uint8_t ip[4]) {
     }
 }
 
+/* active_ip() falls back to 127.0.0.1 when no interface has an address yet (hub_daemon
+ * starts before udhcpc has finished on the Hub): nobody can discover us through loopback */
+static int has_lan_address(const uint8_t ip[4]) {
+    return ip[0] != 127;
+}
+
 void mdns_make_info(mdns_info_t *info, const struct hub_settings *settings, const char *name_suffix) {
     memset(info, 0, sizeof(*info));
     const char *raw = (settings && settings->hub_name[0]) ? settings->hub_name : "Harmony Hub";
@@ -432,15 +438,24 @@ static int open_socket(void) {
     return fd;
 }
 
+static int g_waiting_logged;
+
 static void responder_start(void) {
     if (g_fd >= 0) return;
-    rebuild_info();
-    g_fd = open_socket();
-    if (g_fd < 0) return;
     g_renames = 0;
     g_name_suffix[0] = '\0';
-    start_probing();
+    rebuild_info();
     g_last_poll_ms = now_ms();
+    if (!has_lan_address(g_info.ip)) {
+        /* no address yet: hub_mdns_tick() retries until the interface is up */
+        if (!g_waiting_logged) printf("[*] mDNS: waiting for a network address\n");
+        g_waiting_logged = 1;
+        return;
+    }
+    g_waiting_logged = 0;
+    g_fd = open_socket();
+    if (g_fd < 0) return;
+    start_probing();
     printf("[+] mDNS: advertising %s on port %d (%u.%u.%u.%u)\n", g_info.instance, g_port,
            g_info.ip[0], g_info.ip[1], g_info.ip[2], g_info.ip[3]);
 }
@@ -506,6 +521,15 @@ void hub_mdns_notify_change(void) {
                   memcmp(fresh.txt, g_info.txt, fresh.txt_len) != 0 ||
                   memcmp(fresh.ip, g_info.ip, 4) != 0;
     if (!changed) return;
+    int ip_changed = memcmp(fresh.ip, g_info.ip, 4) != 0;
+    if (ip_changed) {
+        /* the group membership and IP_MULTICAST_IF are bound to the old address: start over */
+        printf("[*] mDNS: address changed to %u.%u.%u.%u, restarting the responder\n",
+               fresh.ip[0], fresh.ip[1], fresh.ip[2], fresh.ip[3]);
+        responder_stop(0);
+        responder_start();
+        return;
+    }
     if (name_changed && g_state == ST_RUNNING) send_announce(1); /* goodbye for the old name */
     g_name_suffix[0] = name_changed ? '\0' : g_name_suffix[0];
     if (name_changed) start_probing();
@@ -525,6 +549,7 @@ static int is_conflict(const mdns_query_t *q, const struct sockaddr_in *from) {
     uint8_t self[4];
     memcpy(self, g_info.ip, 4);
     if (memcmp(&from->sin_addr.s_addr, self, 4) == 0) return 0;
+    if (from->sin_addr.s_addr == htonl(INADDR_LOOPBACK)) return 0; /* our own looped packets */
     for (int i = 0; i < q->nan; i++) {
         if ((q->an[i].type == 33 || q->an[i].type == 16) && mdns_name_eq(q->an[i].name, g_info.instance)) return 1;
         if (q->an[i].type == 1 && mdns_name_eq(q->an[i].name, g_info.hostname)) return 1;
@@ -589,8 +614,15 @@ void hub_mdns_handle(void) {
 }
 
 void hub_mdns_tick(void) {
-    if (g_fd < 0) return;
     uint64_t now = now_ms();
+    if (g_fd < 0) {
+        /* enabled but not running: no address yet (or the socket failed), retry every 2 s */
+        if (g_initialized && g_enabled && now - g_last_poll_ms >= 2000) {
+            g_last_poll_ms = now;
+            responder_start();
+        }
+        return;
+    }
     switch (g_state) {
         case ST_PROBING:
             if (now >= g_next_action_ms) {
