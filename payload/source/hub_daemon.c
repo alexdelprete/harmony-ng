@@ -118,6 +118,9 @@ int main(int argc, char **argv) {
 
     /* 2. Web & WebSocket Server */
     ws_server_init();
+    if (hub_events_subscribe(hub_ws_event_sink, NULL) != 0) {
+        fprintf(stderr, "[-] Could not subscribe the WebSocket sink to the event bus\n");
+    }
     if (state_watch_start() != 0) {
         fprintf(stderr, "[-] Could not start the state watcher: web UIs will not update live\n");
     }

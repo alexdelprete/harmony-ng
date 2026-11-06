@@ -1,6 +1,7 @@
 #define _GNU_SOURCE
 #include "hub_ws.h"
 #include "ws_server.h"
+#include "hub_events.h"
 #include "hub_mqtt.h"
 #include "orchestrator.h"
 #include "hw_action.h"
@@ -12,6 +13,16 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <strings.h>
+
+/* Bus sink: every event goes to every WebSocket client as it is (type, seq, ts added by the bus) */
+void hub_ws_event_sink(const hub_event_t *ev, void *user) {
+    (void)user;
+    if (!ev || !ev->payload) return;
+    char *txt = cJSON_PrintUnformatted(ev->payload);
+    if (!txt) return;
+    ws_broadcast_text(txt);
+    free(txt);
+}
 
 void on_orch_progress(const char *activity_id, orch_state_t state,
                       int current_step, int total_steps,
@@ -37,14 +48,14 @@ void on_orch_progress(const char *activity_id, orch_state_t state,
     cJSON_AddStringToObject(root, "desc", desc);
     cJSON_AddStringToObject(root, "stepDesc", desc);
 
+    /* MQTT keeps the message as it was until milestone 3 moves it to a bus sink; WebSocket
+     * clients get it from the bus (hub_ws_event_sink) */
     char *json_msg = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-
     if (json_msg) {
-        ws_broadcast_text(json_msg);
         hub_mqtt_publish_progress(json_msg);
         free(json_msg);
     }
+    hub_events_emit(HUB_EV_ACTIVITY_PROGRESS, root);
 }
 
 void handle_ws_client_message(int cfd) {
