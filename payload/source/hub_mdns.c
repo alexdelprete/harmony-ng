@@ -349,6 +349,18 @@ void mdns_make_info(mdns_info_t *info, const struct hub_settings *settings, cons
 static int g_fd = -1;
 static int g_initialized;
 static int g_port = MDNS_PORT;
+static int g_off_for_good;   /* test build without a test port: never opens a socket */
+
+/* The test build (hub_daemon_test, -DTEST_HARNESS) must never put a packet on a real network:
+ * every test run would announce a "Test Hub" to Home Assistant on the developer's LAN. There
+ * the responder runs only on a test port (not 5353) and only over loopback: group membership
+ * and the outgoing multicast interface are 127.0.0.1 and the multicast TTL is 0. The Hub's
+ * build is unchanged. */
+#ifdef TEST_HARNESS
+#define MDNS_LOOPBACK_ONLY 1
+#else
+#define MDNS_LOOPBACK_ONLY 0
+#endif
 static int g_enabled = 1;
 static mdns_info_t g_info;
 static char g_name_suffix[32];
@@ -420,19 +432,30 @@ static int open_socket(void) {
         close(fd);
         return -1;
     }
+    uint8_t if_ip[4];
+    memcpy(if_ip, g_info.ip, 4);
+    if (MDNS_LOOPBACK_ONLY) {
+        if_ip[0] = 127; if_ip[1] = 0; if_ip[2] = 0; if_ip[3] = 1;
+    }
     struct ip_mreq mreq;
     memset(&mreq, 0, sizeof(mreq));
     inet_aton(MDNS_GROUP, &mreq.imr_multiaddr);
-    memcpy(&mreq.imr_interface.s_addr, g_info.ip, 4);
+    memcpy(&mreq.imr_interface.s_addr, if_ip, 4);
     if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) != 0) {
         /* keep going: unicast and legacy queries still work (the harness has no multicast) */
         fprintf(stderr, "[!] mDNS: joining %s on %u.%u.%u.%u failed: %s\n", MDNS_GROUP,
-                g_info.ip[0], g_info.ip[1], g_info.ip[2], g_info.ip[3], strerror(errno));
+                if_ip[0], if_ip[1], if_ip[2], if_ip[3], strerror(errno));
     }
     struct in_addr ifaddr;
-    memcpy(&ifaddr.s_addr, g_info.ip, 4);
-    setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &ifaddr, sizeof(ifaddr));
-    unsigned char ttl = 255, loop = 0;
+    memcpy(&ifaddr.s_addr, if_ip, 4);
+    if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &ifaddr, sizeof(ifaddr)) != 0 && MDNS_LOOPBACK_ONLY) {
+        /* never fall back to the default (LAN) interface in a test */
+        fprintf(stderr, "[-] mDNS: loopback multicast interface refused: %s, responder off\n", strerror(errno));
+        close(fd);
+        return -1;
+    }
+    /* TTL 0 in the test build: a multicast packet does not leave the host even if routed */
+    unsigned char ttl = MDNS_LOOPBACK_ONLY ? 0 : 255, loop = MDNS_LOOPBACK_ONLY ? 1 : 0;
     setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
     setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
     return fd;
@@ -441,12 +464,12 @@ static int open_socket(void) {
 static int g_waiting_logged;
 
 static void responder_start(void) {
-    if (g_fd >= 0) return;
+    if (g_fd >= 0 || g_off_for_good) return;
     g_renames = 0;
     g_name_suffix[0] = '\0';
     rebuild_info();
     g_last_poll_ms = now_ms();
-    if (!has_lan_address(g_info.ip)) {
+    if (!MDNS_LOOPBACK_ONLY && !has_lan_address(g_info.ip)) {
         /* no address yet: hub_mdns_tick() retries until the interface is up */
         if (!g_waiting_logged) printf("[*] mDNS: waiting for a network address\n");
         g_waiting_logged = 1;
@@ -472,11 +495,17 @@ static void responder_stop(int goodbye) {
 int hub_mdns_init(int port) {
     g_port = port > 0 ? port : MDNS_PORT;
     g_initialized = 1;
+    if (MDNS_LOOPBACK_ONLY && g_port == MDNS_PORT) {
+        /* test build without --mdns-port (or with 5353): off, whatever mdns_enabled says */
+        g_off_for_good = 1;
+        printf("[*] mDNS: off in the test build (pass --mdns-port N, N != %d, to test it)\n", MDNS_PORT);
+    }
     if (!g_have_settings) {
         config_store_get_settings(&g_settings);
         g_have_settings = 1;
     }
     g_enabled = g_settings.mdns_enabled;
+    if (g_off_for_good) return 0;
     if (g_enabled) responder_start();
     return g_fd >= 0 ? 0 : (g_enabled ? -1 : 0);
 }

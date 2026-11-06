@@ -96,6 +96,7 @@ python3 "$SCRIPT_DIR/test_ws_auth.py"
 python3 "$SCRIPT_DIR/test_ws_keepalive.py"
 python3 "$SCRIPT_DIR/test_ir_raw.py"
 python3 "$SCRIPT_DIR/test_mdns.py"
+python3 "$SCRIPT_DIR/test_no_lan_responders.py"
 
 # 6. Run OpenAPI Specification Contract Validation (docs/openapi.yaml must parse as YAML)
 echo "[-] Validating docs/openapi.yaml with PyYAML..."
