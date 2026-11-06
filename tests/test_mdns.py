@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-mDNS responder (spec 4.1, 4.2) against hub_daemon_test started with --mdns-port 5354: PTR query
+mDNS responder (spec 4.1, 4.2) against hub_daemon_test started with --mdns-port 5354 (the test
+build answers and announces over loopback only, see test_no_lan_responders.py): PTR query
 over loopback gives PTR + SRV + TXT + A with the documented TXT keys, service enumeration, SRV/TXT
 and A queries, known-answer suppression, a hub_name change renames the instance, and
 mdns_enabled false closes the port (true reopens it).
