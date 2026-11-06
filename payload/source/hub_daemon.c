@@ -6,6 +6,7 @@
 #include "http_server.h"
 #include "ws_server.h"
 #include "state_watch.h"
+#include "hub_events.h"
 #include "hub_ws.h"
 #include "hub_mqtt.h"
 #include "hub_ntp.h"
@@ -107,6 +108,7 @@ int main(int argc, char **argv) {
         printf("[!] DRY-RUN MODE ACTIVE: All physical IR, BT, and MQTT outputs will be simulated\n");
     }
 
+    hub_events_init();
     orch_init();
     ir_i2s_init();
     orch_set_progress_callback(on_orch_progress, NULL);
@@ -226,6 +228,8 @@ int main(int argc, char **argv) {
 
         /* Tick Activity Orchestrator state machine & delays */
         orch_tick();
+        /* Deliver queued events to the sinks (WebSocket, later MQTT) on this thread */
+        hub_events_dispatch();
         mqtt_cmd_tick();
 
         /* Tick SNTP network time sync */

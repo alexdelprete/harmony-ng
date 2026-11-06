@@ -100,6 +100,7 @@ build_daemon() {
         payload/source/hw_action.c \
         payload/source/ws_server.c \
         payload/source/state_watch.c \
+        payload/source/hub_events.c \
         payload/source/mqtt_client.c \
         payload/source/sha256.c \
         payload/source/timezone_db.c \
