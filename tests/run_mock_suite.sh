@@ -100,6 +100,7 @@ python3 "$SCRIPT_DIR/test_mdns.py"
 python3 "$SCRIPT_DIR/test_mqtt_v2.py"
 python3 "$SCRIPT_DIR/test_hbus.py"
 python3 "$SCRIPT_DIR/test_ssdp.py"
+python3 "$SCRIPT_DIR/test_hbus_aioharmony.py"
 
 # 6. Run OpenAPI Specification Contract Validation (docs/openapi.yaml must parse as YAML)
 echo "[-] Validating docs/openapi.yaml with PyYAML..."
