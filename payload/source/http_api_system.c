@@ -8,6 +8,8 @@
 #include "config_store.h"
 #include "orchestrator.h"
 #include "hub_mqtt.h"
+#include "hbus_server.h"
+#include "hub_ssdp.h"
 #include "harmony_version.h"
 #include "resource_cache.h"
 #include "cJSON.h"
@@ -55,6 +57,8 @@ static void get_cache_space_kb(uint64_t *total_kb, uint64_t *free_kb) {
 void apply_hub_settings(const struct hub_settings *s) {
     if (!s) return;
     hub_mdns_apply_settings(s);
+    hbus_apply_settings(s);
+    hub_ssdp_apply_settings(s);
     int lfd = open("/sys/class/input/input0/led", O_WRONLY);
     if (lfd >= 0) {
         const char *val = "1\n";
