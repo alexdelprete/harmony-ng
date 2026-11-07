@@ -10,6 +10,7 @@ Pure stdlib; the daemon runs on a temporary mock root with tests/fixtures/ha/sam
 """
 
 import json
+import subprocess
 import os
 import sys
 import time
@@ -101,35 +102,59 @@ def test_state_watcher(hub):
     extra = [m for m in ws.drain(1.5) if m.get("type") == "config_changed"]
     check(extra == [], "exactly one config_changed", str(extra))
 
-    # Bluetooth: hub_btstack's status file appears (written atomically)
-    bt = {"ok": True, "running": True, "connected": True, "target": "AA:BB:CC:DD:EE:FF",
-          "last_button": "KEY_ENTER", "last_seen": 1, "updated": 1,
-          "hosts": [{"addr": "AA:BB:CC:DD:EE:FF", "name": "Test Host", "connected": True, "paired": True}]}
+    # Bluetooth: hub_btstack's status file appears (written atomically), in hub_btstack's own
+    # format: no ok, running, top-level connected or pairing; hub_daemon adds them
+    bt = {"backend": "btstack", "pid": os.getpid(), "state": "connecting", "target": "11:22:33:44:55:66",
+          "last_button": "KEY_ENTER", "last_seen": 1,
+          "remote": {"connected": True, "addr": "11:22:33:44:55:66"},
+          "host": {"connected": True, "addr": "AA:BB:CC:DD:EE:FF", "name": "Test Host", "pairing": False},
+          "hosts": [{"addr": "AA:BB:CC:DD:EE:01", "name": "Other Host", "connected": False, "paired": True, "cid": 2},
+                    {"addr": "AA:BB:CC:DD:EE:FF", "name": "Test Host", "connected": True, "paired": True, "cid": 6}]}
     tmp = BT_STATUS_FILE + ".tmp"
-    try:
+
+    def write_bt():
         with open(tmp, "w") as f:
             json.dump(bt, f)
         os.replace(tmp, BT_STATUS_FILE)
+
+    try:
+        write_bt()
         msg, frames = ws.wait_for("bt_status", 5)
-        check(msg is not None and msg.get("connected") is True and msg.get("target") == "AA:BB:CC:DD:EE:FF",
-              "bt_status with the file's content", str(frames))
+        check(msg is not None and msg.get("ok") is True and msg.get("running") is True
+              and msg.get("connected") is True and msg.get("pairing") is False,
+              "bt_status adds ok, running, connected and pairing", str(frames))
+        check(msg is not None and [h.get("addr") for h in msg.get("hosts", [])] == ["AA:BB:CC:DD:EE:01", "AA:BB:CC:DD:EE:FF"]
+              and msg.get("host", {}).get("name") == "Test Host" and msg.get("state") == "connecting",
+              "bt_status keeps hub_btstack's fields (hosts with addr, host, state)", str(msg))
+        st, rest = hub.http_get("/api/bt-status")
+        check(st == 200 and rest.get("running") is True and rest.get("connected") is True
+              and rest.get("pairing") is False and len(rest.get("hosts", [])) == 2,
+              "GET /api/bt-status adds the same fields", str(rest))
         # Only volatile fields change: no new event
         bt["last_button"] = "KEY_UP"
         bt["last_seen"] = 2
-        bt["updated"] = 2
-        with open(tmp, "w") as f:
-            json.dump(bt, f)
-        os.replace(tmp, BT_STATUS_FILE)
+        write_bt()
         extra = [m for m in ws.drain(1.5) if m.get("type") == "bt_status"]
         check(extra == [], "volatile fields do not count as a change", str(extra))
-        # A real change does
-        bt["connected"] = False
-        bt["hosts"][0]["connected"] = False
-        with open(tmp, "w") as f:
-            json.dump(bt, f)
-        os.replace(tmp, BT_STATUS_FILE)
+        # A real change does: the connected host drops
+        bt["host"]["connected"] = False
+        bt["hosts"][1]["connected"] = False
+        write_bt()
         msg, frames = ws.wait_for("bt_status", 5)
-        check(msg is not None and msg.get("connected") is False, "bt_status on a real change", str(frames))
+        check(msg is not None and msg.get("connected") is False and msg.get("running") is True,
+              "bt_status on a real change, connected false", str(frames))
+        # Pairing mode shows at the top level
+        bt["host"]["pairing"] = True
+        write_bt()
+        msg, frames = ws.wait_for("bt_status", 5)
+        check(msg is not None and msg.get("pairing") is True, "pairing from host.pairing", str(frames))
+        # hub_btstack gone (its pid no longer exists): running false
+        dead = subprocess.Popen(["true"])
+        dead.wait()
+        bt["pid"] = dead.pid
+        write_bt()
+        msg, frames = ws.wait_for("bt_status", 5)
+        check(msg is not None and msg.get("running") is False, "running false when hub_btstack's pid is gone", str(frames))
     finally:
         for p in (tmp, BT_STATUS_FILE):
             try:

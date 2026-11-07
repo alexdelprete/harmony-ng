@@ -22,6 +22,8 @@
 #include "config_store.h"
 #include "cJSON.h"
 
+#include <errno.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -177,6 +179,31 @@ int state_watch_offer_rf_status(cJSON *obj) {
     return emitted;
 }
 
+void bt_status_normalize(cJSON *bt) {
+    if (!bt || !cJSON_IsObject(bt)) return;
+    if (!cJSON_GetObjectItem(bt, "ok")) cJSON_AddBoolToObject(bt, "ok", 1);
+    if (!cJSON_GetObjectItem(bt, "running")) {
+        int running = 1;
+        const cJSON *pid = cJSON_GetObjectItem(bt, "pid");
+        if (cJSON_IsNumber(pid) && pid->valueint > 0) {
+            running = (kill((pid_t)pid->valueint, 0) == 0 || errno == EPERM);
+        }
+        cJSON_AddBoolToObject(bt, "running", running);
+    }
+    const cJSON *host = cJSON_GetObjectItem(bt, "host");
+    if (!cJSON_GetObjectItem(bt, "connected")) {
+        int connected = cJSON_IsTrue(cJSON_GetObjectItem(host, "connected"));
+        const cJSON *h = NULL;
+        cJSON_ArrayForEach(h, cJSON_GetObjectItem(bt, "hosts")) {
+            if (cJSON_IsTrue(cJSON_GetObjectItem(h, "connected"))) connected = 1;
+        }
+        cJSON_AddBoolToObject(bt, "connected", connected);
+    }
+    if (!cJSON_GetObjectItem(bt, "pairing")) {
+        cJSON_AddBoolToObject(bt, "pairing", cJSON_IsTrue(cJSON_GetObjectItem(host, "pairing")));
+    }
+}
+
 static void *state_watch_thread(void *arg) {
     (void)arg;
     static const char *const bt_drop[] = { "last_button", "last_seen", "updated", NULL };
@@ -192,7 +219,10 @@ static void *state_watch_thread(void *arg) {
         char *raw = read_small_file(BT_STATUS_FILE, 16384);
         cJSON *bt = raw ? cJSON_Parse(raw) : NULL;
         free(raw);
-        if (bt) emit_if_changed(bt, HUB_EV_BT_STATUS, &last_bt, bt_drop, NULL);
+        if (bt) {
+            bt_status_normalize(bt); /* also catches hub_btstack dying with the file unchanged */
+            emit_if_changed(bt, HUB_EV_BT_STATUS, &last_bt, bt_drop, NULL);
+        }
 
         /* RF status: one fetch at start so the snapshot is complete before hub_rf's first push
          * (hub_rf also pushes right after it starts); then pushes only */
