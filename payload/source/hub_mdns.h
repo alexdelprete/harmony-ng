@@ -86,7 +86,8 @@ int mdns_parse_query(const uint8_t *pkt, size_t len, mdns_query_t *q);
 /* Case-insensitive DNS name compare */
 int mdns_name_eq(const char *a, const char *b);
 
-/* Responder lifecycle (main loop). port: MDNS_PORT, or another one for the test harness. */
+/* Responder lifecycle (main loop). port: MDNS_PORT on the Hub. In the test build (TEST_HARNESS)
+ * the responder runs only on another port (--mdns-port) and only over loopback, TTL 0. */
 int hub_mdns_init(int port);
 int hub_mdns_fd(void);               /* -1 when not running */
 void hub_mdns_handle(void);          /* a packet is readable */

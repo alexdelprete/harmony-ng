@@ -26,6 +26,17 @@ static int g_shim_port = 8088;
 static int g_enabled;
 static int g_initialized;
 static int g_disabled;
+
+/* The test build (hub_daemon_test, -DTEST_HARNESS) must never answer or announce on a real
+ * network: a test run would show up in Home Assistant's core Harmony integration as a
+ * discovered "Test Hub". There the responder runs only on a test port (not 1900) and only over
+ * loopback: group membership and the multicast interface are 127.0.0.1, multicast TTL 0. The
+ * Hub's build is unchanged. */
+#ifdef TEST_HARNESS
+#define SSDP_LOOPBACK_ONLY 1
+#else
+#define SSDP_LOOPBACK_ONLY 0
+#endif
 static struct hub_settings g_settings;
 static int g_have_settings;
 static char g_uuid[40] = "";
@@ -160,19 +171,26 @@ static int open_socket(void) {
         close(fd);
         return -1;
     }
+    /* g_ip stays the advertised address (LOCATION); the socket's interface is loopback in tests */
+    const char *if_ip = SSDP_LOOPBACK_ONLY ? "127.0.0.1" : g_ip;
     struct ip_mreq mreq;
     memset(&mreq, 0, sizeof(mreq));
     inet_aton(SSDP_GROUP, &mreq.imr_multiaddr);
-    inet_aton(g_ip, &mreq.imr_interface);
+    inet_aton(if_ip, &mreq.imr_interface);
     if (setsockopt(fd, IPPROTO_IP, IP_ADD_MEMBERSHIP, &mreq, sizeof(mreq)) != 0) {
         fprintf(stderr, "[!] SSDP: joining %s failed: %s (unicast searches still work)\n", SSDP_GROUP, strerror(errno));
     }
     struct in_addr ifaddr;
-    inet_aton(g_ip, &ifaddr);
-    setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &ifaddr, sizeof(ifaddr));
+    inet_aton(if_ip, &ifaddr);
+    if (setsockopt(fd, IPPROTO_IP, IP_MULTICAST_IF, &ifaddr, sizeof(ifaddr)) != 0 && SSDP_LOOPBACK_ONLY) {
+        /* never fall back to the default (LAN) interface in a test */
+        fprintf(stderr, "[-] SSDP: loopback multicast interface refused: %s, responder off\n", strerror(errno));
+        close(fd);
+        return -1;
+    }
     /* loop 1: a listener on the Hub itself (and the test suite) sees our NOTIFYs; our own
-     * socket drops them in hub_ssdp_handle (not an M-SEARCH) */
-    unsigned char ttl = 4, loop = 1;
+     * socket drops them in hub_ssdp_handle (not an M-SEARCH). TTL 0 in the test build. */
+    unsigned char ttl = SSDP_LOOPBACK_ONLY ? 0 : 4, loop = 1;
     setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
     setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
     return fd;
@@ -207,6 +225,12 @@ int hub_ssdp_init(int port, int shim_port) {
     g_port = port > 0 ? port : SSDP_PORT;
     g_shim_port = shim_port > 0 ? shim_port : 8088;
     g_initialized = 1;
+    if (SSDP_LOOPBACK_ONLY && g_port == SSDP_PORT) {
+        /* test build without --ssdp-port (or with 1900): off, whatever legacy_enabled says */
+        g_disabled = 1;
+        printf("[*] SSDP: off in the test build (pass --ssdp-port N, N != %d, to test it)\n", SSDP_PORT);
+        return 0;
+    }
     if (!g_have_settings) {
         config_store_get_settings(&g_settings);
         g_have_settings = 1;

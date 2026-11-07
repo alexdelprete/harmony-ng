@@ -82,7 +82,7 @@ int main(int argc, char **argv) {
     CHECK(strcmp(hbus_control_group("InputHdmi1"), "Miscellaneous") == 0, "Miscellaneous group");
 
     /* configuration */
-    cJSON *cfg = hbus_build_config("7274750", "0a1b2c3d");
+    cJSON *cfg = hbus_build_config("1234567", "0a1b2c3d");
     CHECK(cfg != NULL, "config built");
     cJSON *acts = cJSON_GetObjectItemCaseSensitive(cfg, "activity");
     cJSON *devs = cJSON_GetObjectItemCaseSensitive(cfg, "device");
@@ -130,7 +130,7 @@ int main(int argc, char **argv) {
     cJSON_ArrayForEach(g, cJSON_GetObjectItemCaseSensitive(d0, "controlGroup")) nfun += cJSON_GetArraySize(cJSON_GetObjectItemCaseSensitive(g, "function"));
     CHECK(nfun == 5, "device 1: every command in a group (5)");
     cJSON *glob = cJSON_GetObjectItemCaseSensitive(cfg, "global");
-    CHECK(strcmp(s_of(glob, "timeStampHash"), "0a1b2c3d;7274750") == 0 && strcmp(s_of(glob, "locale"), "en-US") == 0, "global.timeStampHash and locale");
+    CHECK(strcmp(s_of(glob, "timeStampHash"), "0a1b2c3d;1234567") == 0 && strcmp(s_of(glob, "locale"), "en-US") == 0, "global.timeStampHash and locale");
     CHECK(cJSON_IsObject(cJSON_GetObjectItemCaseSensitive(cfg, "content")) && cJSON_IsArray(cJSON_GetObjectItemCaseSensitive(cfg, "sequence")), "content and sequence");
     /* the client converts ids with int(): every id must parse */
     cJSON *it = NULL;

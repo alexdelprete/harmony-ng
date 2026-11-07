@@ -19,7 +19,9 @@ extern "C" {
 #define SSDP_GROUP  "239.255.255.250"
 #define SSDP_URN    "urn:myharmony-com:device:harmony:1"
 
-/* port: SSDP_PORT, a test port, or 0 = responder off (harness); shim_port: where /description is served */
+/* port: SSDP_PORT on the Hub, a test port, or 0 = responder off; in the test build (TEST_HARNESS)
+ * the responder runs only on a port other than SSDP_PORT and only over loopback, TTL 0.
+ * shim_port: where /description is served */
 int hub_ssdp_init(int port, int shim_port);
 int hub_ssdp_fd(void);
 void hub_ssdp_handle(void);
