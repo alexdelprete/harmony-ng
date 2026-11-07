@@ -687,19 +687,33 @@ Home Assistant's `infrared` platform produces). Capability flag: `ir_raw`.
 
 ### 6.1 Bluetooth Status
 #### `GET /api/bt-status`
-Returns connection status, BTstack daemon state, paired hosts, and active target.
+Returns `hub_btstack`'s status (`/tmp/hub_btstack_status.json`) with four fields `hub_daemon` adds:
+`ok`, `running` (the `hub_btstack` process is alive), `connected` (any host connected) and
+`pairing` (pairing mode on). `hosts` lists every paired host with its address (`addr`), name,
+`connected`, `paired` and `cid`; `host` is the host keys go to. `target` and `remote` are the
+Bluetooth LE remote, not a host; `state` is that link's state.
 - **Response `200 OK`**:
   ```json
   {
+    "backend": "btstack",
+    "pid": 1234,
+    "state": "connecting",
+    "target": "11:22:33:44:55:66",
+    "last_button": "",
+    "last_seen": 0,
+    "remote": {"connected": true, "addr": "11:22:33:44:55:66"},
+    "host": {"connected": true, "addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "pairing": false},
+    "hosts": [
+      {"addr": "AA:BB:CC:DD:EE:01", "name": "Television", "connected": false, "paired": true, "cid": 2},
+      {"addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "connected": true, "paired": true, "cid": 6}
+    ],
     "ok": true,
     "running": true,
     "connected": true,
-    "target": "AA:BB:CC:DD:EE:FF",
-    "devices": [
-      {"bdaddr": "AA:BB:CC:DD:EE:FF", "name": "Apple TV"}
-    ]
+    "pairing": false
   }
   ```
+  Without a status file (`hub_btstack` not started): `{"ok": true, "running": false, "state": "stopped", "connected": false, "pairing": false, "hosts": []}`.
 
 ### 6.2 Host Pairing Mode
 #### `POST /api/bt-pairing`
@@ -1375,10 +1389,10 @@ affected inventory over REST.
 ```
 
 #### 10.11 Bluetooth Status
-The `GET /api/bt-status` object, sent when it changes (`last_button`, `last_seen` and `updated`
-do not count as a change).
+The `GET /api/bt-status` object (section 6.1), sent when it changes (`last_button`, `last_seen` and
+`updated` do not count as a change; `running` turning false when `hub_btstack` dies does).
 ```json
-{"type": "bt_status", "seq": 20, "ts": 1762387200, "ok": true, "running": true, "connected": true, "target": "AA:BB:CC:DD:EE:FF", "hosts": [ ... ]}
+{"type": "bt_status", "seq": 20, "ts": 1762387200, "ok": true, "running": true, "connected": true, "pairing": false, "host": {...}, "hosts": [{"addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "connected": true, "paired": true, "cid": 6}], "...": "..."}
 ```
 
 #### 10.12 RF Remote Status

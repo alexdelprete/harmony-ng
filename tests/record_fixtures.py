@@ -33,10 +33,15 @@ PORT = 8991
 UNIT_ID = "20140101120000-000001"
 BT_STATUS_FILE = "/tmp/hub_btstack_status.json"
 
+# hub_btstack's own format (/tmp/hub_btstack_status.json); hub_daemon adds ok, running, connected
+# and pairing. "pid" is filled in at run time with a live process.
 BT_STATUS = {
-    "ok": True, "running": True, "connected": True, "target": "AA:BB:CC:DD:EE:FF",
-    "pairing": False, "last_button": "", "last_seen": 0, "updated": 0,
-    "hosts": [{"addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "connected": True, "paired": True, "pairing": False}],
+    "backend": "btstack", "pid": 0, "state": "connecting", "target": "11:22:33:44:55:66",
+    "last_button": "", "last_seen": 0,
+    "remote": {"connected": True, "addr": "11:22:33:44:55:66"},
+    "host": {"connected": True, "addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "pairing": False},
+    "hosts": [{"addr": "AA:BB:CC:DD:EE:01", "name": "Television", "connected": False, "paired": True, "cid": 2},
+              {"addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "connected": True, "paired": True, "cid": 6}],
 }
 
 RF_STATUS = {
@@ -101,7 +106,7 @@ def main():
     tmp = BT_STATUS_FILE + ".tmp"
     try:
         with open(tmp, "w") as f:
-            json.dump(BT_STATUS, f)
+            json.dump(dict(BT_STATUS, pid=os.getpid()), f)
         os.replace(tmp, BT_STATUS_FILE)
         print("[-] Recording milestone 1 fixtures into %s" % args.out)
         with HubHarness(port=PORT, args=["--mfg-file", mfg_path]) as hub:
