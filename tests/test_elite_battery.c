@@ -101,14 +101,36 @@ int main(void) {
     p = elite_battery_filter_step(&f, 4000, false, false, false, t + 702000);
     CHECK(p == elite_battery_pct_of_mv(3880), "no rise under load");
 
-    /* 4. charging: the reading is 0.2 V high, the percentage rises with it and never falls */
+    /* 4. charging on USB (Harmony Ultimate: 3.644 V rested, 3.740 V with the charger on): the
+     *    offset is measured at the start, the percentage rises with the corrected reading and
+     *    never falls */
     elite_battery_filter_init(&f);
-    p = elite_battery_filter_step(&f, 4000, true, false, false, 0);
-    CHECK(p == elite_battery_pct_of_mv(3800), "first reading while charging, corrected by 0.2 V");
-    p = elite_battery_filter_step(&f, 4100, true, false, false, 1000);
-    CHECK(p == elite_battery_pct_of_mv(3900), "charging: rises at once");
-    p = elite_battery_filter_step(&f, 3950, true, false, false, 2000);
-    CHECK(p == elite_battery_pct_of_mv(3900), "charging: never falls");
+    p = elite_battery_filter_step(&f, 3644, false, false, true, 0);
+    int p_rest = p;
+    p = elite_battery_filter_step(&f, 3740, true, true, false, 1000);
+    CHECK(p == p_rest && f.chg_offset_mv == 96, "the charging start keeps the value and measures 96 mV");
+    p = elite_battery_filter_step(&f, 3746, true, false, false, 2000);
+    CHECK(p == elite_battery_pct_of_mv(3650), "charging: corrected by the measured offset");
+    p = elite_battery_filter_step(&f, 4000, true, false, false, 3000);
+    CHECK(p == elite_battery_pct_of_mv(3904), "charging: rises at once");
+    p = elite_battery_filter_step(&f, 3950, true, false, false, 4000);
+    CHECK(p == elite_battery_pct_of_mv(3904), "charging: never falls");
+    /* a start while charging: restarted on USB after an hour of charging it read 3.94 V, then
+     * 4.00 V; with a fixed 0.2 V that was 42 % and then 60 % */
+    elite_battery_filter_init(&f);
+    p = elite_battery_filter_step(&f, 3940, true, false, false, 0);
+    CHECK(p == elite_battery_pct_of_mv(3840), "a start while charging uses the default offset");
+    p = elite_battery_filter_step(&f, 4000, true, false, false, 60000);
+    CHECK(p >= 85, "nearly full on USB is not shown as 60 %");
+    /* a measured offset stays within the limits */
+    elite_battery_filter_init(&f);
+    elite_battery_filter_step(&f, 3600, false, false, true, 0);
+    elite_battery_filter_step(&f, 4100, true, true, false, 1000);
+    CHECK(f.chg_offset_mv == ELITE_BATT_CHARGE_OFFSET_MAX_MV, "offset capped");
+    elite_battery_filter_init(&f);
+    elite_battery_filter_step(&f, 3800, false, false, true, 0);
+    elite_battery_filter_step(&f, 3790, true, true, false, 1000);
+    CHECK(f.chg_offset_mv == ELITE_BATT_CHARGE_OFFSET_MIN_MV, "offset floored");
 
     /* 5. the charging state is debounced: off, on, off within 9 s (lifting the remote) is one
      *    change, 5 s after it settled */
@@ -149,6 +171,8 @@ int main(void) {
     CHECK(lo2 >= before - 1 && hi2 <= before + 1, "the percentage stays put through the blip");
     p = elite_battery_filter_step(&f, 3850, false, false, true, t + 60000);
     CHECK(p == elite_battery_pct_of_mv(3850), "the next rested reading sets it");
+    /* the cradle blip measured its own offset: 4.03 V charging against the 3.86 V rested reading */
+    CHECK(f.chg_offset_mv == 170, "cradle offset measured at the blip");
 
     /* 7. the reporter: every 5 minutes, at once on request (link up, version report), on a
      *    charging change, and with the screen on for 2 points (at most once a minute) */
