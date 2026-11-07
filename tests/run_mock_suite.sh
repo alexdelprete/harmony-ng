@@ -85,6 +85,7 @@ gcc -Wall -Wextra -O2 -I"$REPO_ROOT/payload/source" -o "$BUILD_DIR/test_mdns_pac
 gcc -Wall -Wextra -O2 -I"$REPO_ROOT/payload/source" -o "$BUILD_DIR/test_hbus_config" "$SCRIPT_DIR/test_hbus_config.c" "$REPO_ROOT/payload/source/hbus_config.c" "$REPO_ROOT/payload/source/sha256.c" "$REPO_ROOT/payload/source/cJSON.c" -lm && "$BUILD_DIR/test_hbus_config" "$SCRIPT_DIR/fixtures/ha/sample_config"
 gcc -Wall -Wextra -O2 -I"$REPO_ROOT/payload/source" -o "$BUILD_DIR/test_hub_events" "$SCRIPT_DIR/test_hub_events.c" "$REPO_ROOT/payload/source/hub_events.c" "$REPO_ROOT/payload/source/cJSON.c" -lpthread -lm && "$BUILD_DIR/test_hub_events"
 gcc -Wall -O2 -I"$REPO_ROOT/payload/source" -o "$BUILD_DIR/test_rf_status_json" "$SCRIPT_DIR/test_rf_status_json.c" "$REPO_ROOT/payload/source/rf_state.c" "$REPO_ROOT/payload/source/rf_api.c" "$REPO_ROOT/payload/source/cJSON.c" -lpthread -lm && "$BUILD_DIR/test_rf_status_json"
+gcc -Wall -O2 -I"$REPO_ROOT/payload/source" -o "$BUILD_DIR/test_rf_model" "$SCRIPT_DIR/test_rf_model.c" "$REPO_ROOT/payload/source/rf_state.c" "$REPO_ROOT/payload/source/rf_api.c" "$REPO_ROOT/payload/source/cJSON.c" -lpthread -lm && "$BUILD_DIR/test_rf_model"
 gcc -Wall -O2 -I"$REPO_ROOT/payload/source" -I"$REPO_ROOT/payload/source/elite" -o "$BUILD_DIR/test_rf_ota_resume" "$SCRIPT_DIR/test_rf_ota_resume.c" "$REPO_ROOT/payload/source/elite/elite_rf_ota.c" "$REPO_ROOT/payload/source/sha256.c" && "$BUILD_DIR/test_rf_ota_resume"
 
 # 5. Run Hub & Remote Full Co-Simulation

@@ -843,17 +843,25 @@ Returns CC2544 radio state, paired remote slots, model identification, screen ca
         "active": true,
         "address": "12345678",
         "rf_address": "12345678",
-        "model": "Harmony Companion",
-        "has_screen": false,
-        "supports_ota": false,
+        "name": "Harmony Ultimate (Slot 1)",
+        "model": "ultimate",
+        "model_name": "Harmony Ultimate",
+        "skin": 100,
+        "equad_id": 16417,
+        "has_screen": true,
+        "supports_ota": true,
         "link": { "frames_rx": 1520, "acked_sent": 412, "acked_ok": 398, "retries": 14, "naks": 9, "last_seen_s": 2 }
       },
       {
         "slot": 2,
-        "active": false,
-        "address": "None",
-        "rf_address": "None",
-        "model": "None",
+        "active": true,
+        "address": "87654321",
+        "rf_address": "87654321",
+        "name": "Harmony Companion (Slot 2)",
+        "model": "companion",
+        "model_name": "Harmony Companion",
+        "skin": null,
+        "equad_id": 16422,
         "has_screen": false,
         "supports_ota": false
       }
@@ -862,6 +870,23 @@ Returns CC2544 radio state, paired remote slots, model identification, screen ca
   ```
 - `slots[].link`: RF traffic with the remote since `hub_rf` started: protocol frames received, frames sent that wait for an ACK (resends included) and how many were ACKed, resends, sends the Hub's CC2544 refused (NAK), and seconds since the last frame from the remote (`-1` before the first).
 
+- `slots[].model`: the product, a stable machine id: `ultimate`, `ultimate_one`, `ultimate_home`,
+  `elite`, `950`, `touch` (a touchscreen remote with a skin id the stock table does not list),
+  `companion`, `smart_control`, or `unknown`. A touchscreen remote (EquadID `0x4021`, the
+  "Juniper" family) is identified by the skin id it reports and is `unknown` until it does
+  (older harmony-ng remotes do not report one); Smart Control and Companion are identified by
+  their EquadID. Never guessed from traffic.
+- `slots[].model_name`: the product name as the stock remote UI shows it ("Harmony Ultimate",
+  "Harmony Ultimate One", "Harmony Ultimate Home", "Harmony Elite", "Harmony 950",
+  "Harmony Touch", "Harmony Companion", "Harmony Smart Control"), `null` while unknown.
+  `slots[].name` is `"<model_name> (Slot N)"`; while the model is unknown, the CC2544's slot name
+  or "Harmony Remote".
+- `slots[].skin`: the skin id the remote reported (an integer, `null` when not reported).
+- `slots[].equad_id`: the EquadID the Hub's CC2544 reports for the slot (an integer: 16417 =
+  `0x4021` touchscreen remotes, 16414 = `0x401E` Smart Control, 16422 / 16423 = `0x4026` /
+  `0x4027` Companion; `null` when not known). See `HARMONY_RF_PROTOCOL.md` 4.3.
+  The same slot objects are in the WebSocket `rf_status` event and snapshot (10.12, 10.14) and
+  in the MQTT topic `<base>/rf` (8.1).
 - `slots[].remote_id`: the remote's factory unit id (its `mfg` partition, `RF_MSG_UNIT_ID`),
   present once the remote reported it since pairing. The identifier for the remote's device in
   integrations; the slot number is only an attribute. Cleared on unpair.

@@ -81,9 +81,7 @@ static void enqueue_browsed_device_cmd(const uint8_t *payload) {
 void handle_rf_frame(const rf_frame_t *f) {
     if (f->dev_slot == 1 || f->dev_slot == 2) {
         mark_remote_slot_active(f->dev_slot);
-        if (g_paired_remotes[f->dev_slot - 1].model != REMOTE_MODEL_COMPANION) {
-            g_paired_remotes[f->dev_slot - 1].model = REMOTE_MODEL_ELITE;
-        }
+        rf_slot_saw_protocol_frame(f->dev_slot);
     }
     switch (f->msg_type) {
         case RF_MSG_ACK: {
@@ -289,26 +287,10 @@ void handle_rf_frame(const rf_frame_t *f) {
         }
 
         case RF_MSG_UNIT_ID: {
-            /* The remote's factory unit id: payload[0] = length, then ASCII. Stored next to the
-             * version (file rewritten only on change), shown as slots[].remote_id. */
+            /* The remote's factory unit id and skin id (rf_proto.h), applied by rf_state.c */
             uint8_t slot = f->dev_slot & 0x0F;
             if (slot < 1 || slot > 2) slot = 1;
-            int idx = slot - 1;
-            size_t n = f->payload[0];
-            if (n > RF_UNIT_ID_MAX) n = RF_UNIT_ID_MAX;
-            char id[RF_UNIT_ID_MAX + 1] = {0};
-            size_t k = 0;
-            for (size_t i = 0; i < n; i++) {
-                uint8_t c = f->payload[1 + i];
-                if (c < 0x21 || c > 0x7E) break; /* printable ASCII only, no blanks */
-                id[k++] = (char)c;
-            }
-            id[k] = '\0';
-            if (k > 0 && strcmp(g_remote_versions[idx].remote_id, id) != 0) {
-                snprintf(g_remote_versions[idx].remote_id, sizeof(g_remote_versions[idx].remote_id), "%s", id);
-                rf_state_save_version_file(slot);
-                printf("[*] UNIT_ID: Slot %d -> %s\n", slot, id);
-            }
+            if (rf_slot_apply_unit_id(slot, f->payload)) rf_state_save_version_file(slot);
             rf_frame_t ack;
             rf_build_ack(&ack, slot, f->seq, 0x00);
             rf_send_frame(&ack);

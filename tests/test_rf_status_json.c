@@ -17,41 +17,7 @@
 #include "rf_api.h"
 #include "cJSON.h"
 
-/* Stubs for the parts of hub_rf that rf_api.c calls (same as test_rf_loopback.c) */
-bool is_ota_busy(void) { return false; }
-bool is_slot_direct_mode(int slot) { (void)slot; return false; }
-const char *get_current_activity(void) { return "-1"; }
-void start_pairing_mode(int slot) { (void)slot; }
-void stop_pairing_mode(void) {}
-void unpair_device(int slot) { (void)slot; }
-uint8_t g_tx_seq = 0;
-static int g_radio_writes = 0;
-void rf_write_cmd(const uint8_t *b, size_t l) { (void)b; (void)l; g_radio_writes++; }
-int rf_send_frame(uint8_t pipe, uint8_t msg_type, uint8_t flags, const uint8_t *payload, size_t len) {
-    (void)pipe; (void)msg_type; (void)flags; (void)payload; (void)len; return 0;
-}
-int rf_send_frame_acked(uint8_t pipe, uint8_t msg_type, uint8_t flags, const uint8_t *payload, size_t len, int retries) {
-    (void)pipe; (void)msg_type; (void)flags; (void)payload; (void)len; (void)retries; return 0;
-}
-void rf_send_hub_activity_sync(void) {}
-void rf_send_settings_push_slot(uint8_t slot, int bright, int timeout, int touch, int gyro,
-                               int nav_key, int nav_mode, int confirm_act, int touch_sens,
-                               int remote_mode, int gyro_rate, int btn_backlight,
-                               int night_start, int night_end, int usbeth, int no_screen,
-                               int cap_buttons, int power_debug, int language, int theme, int layout) {
-    (void)slot; (void)bright; (void)timeout; (void)touch; (void)gyro;
-    (void)nav_key; (void)nav_mode; (void)confirm_act; (void)touch_sens;
-    (void)remote_mode; (void)gyro_rate; (void)btn_backlight;
-    (void)night_start; (void)night_end; (void)usbeth; (void)no_screen;
-    (void)cap_buttons; (void)power_debug; (void)language;
-}
-void rf_notify_update_available(int slot) { (void)slot; }
-void rf_push_custom_icon(const char *id, const char *type) { (void)id; (void)type; }
-void record_config_diff(void) {}
-void rf_sync_cache_invalidate(void) {}
-int rf_wake_remote(uint8_t slot, int attempts) { (void)slot; (void)attempts; return 0; }
-void *config_push_worker(void *arg) { (void)arg; return NULL; }
-void *rf_ota_sender_worker(void *arg) { (void)arg; return NULL; }
+#include "rf_api_stubs.h"
 
 static int g_failures;
 #define CHECK(cond, msg) do { if (!(cond)) { g_failures++; printf("  FAIL %s (line %d)\n", msg, __LINE__); } } while (0)
@@ -64,11 +30,13 @@ static cJSON *parse(const char *s) {
 
 int main(void) {
     printf("rf_build_status_json test\n");
-    /* A paired Elite in slot 1 */
+    /* A paired Harmony Ultimate in slot 1 (Juniper family, skin 0x64) */
     g_paired_remotes[0].active = true;
     g_paired_remotes[0].rf_addr[0] = 0xE5; g_paired_remotes[0].rf_addr[1] = 0xF6;
     g_paired_remotes[0].rf_addr[2] = 0x07; g_paired_remotes[0].rf_addr[3] = 0x18;
-    g_paired_remotes[0].model = REMOTE_MODEL_ELITE;
+    g_paired_remotes[0].model = REMOTE_MODEL_JUNIPER;
+    g_paired_remotes[0].equad_id = RF_EQUAD_JUNIPER;
+    g_remote_versions[0].skin = RF_SKIN_ULTIMATE;
     g_paired_remotes[0].last_seen_ms = 1;
     snprintf(g_remote_versions[0].sw_version, sizeof(g_remote_versions[0].sw_version), "2.2.0");
     g_remote_versions[0].config_version = 7;

@@ -176,6 +176,14 @@ int main(int argc, char **argv) {
         g_remote_unit_id[0] = '\0';
         printf("[!] No unit id in the mfg partition: none will be reported to the Hub\n");
     }
+    /* The product (Ultimate, Elite, ...) is the skin id, not the RF family: reported with the
+     * unit id. A missing record is fine: the Hub shows the model as unknown. */
+    if (mfg_read_skin(getenv("HARMONY_MFG_FILE"), &g_remote_skin_id) == 0) {
+        printf("[+] Skin id 0x%02X (mfg partition)\n", g_remote_skin_id);
+    } else {
+        g_remote_skin_id = 0;
+        printf("[!] No skin id in the mfg partition: the Hub will show the model as unknown\n");
+    }
 
     load_settings_conf();
     load_activity_usage();

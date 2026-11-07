@@ -95,11 +95,15 @@
  * one without this message drops it as unknown and sends no ACK. */
 #define RF_MSG_WAKE                0x30
 
-/* Remote -> Hub: the remote's factory unit id (ACK'd). payload[0] = length, payload[1..] = the
- * id as ASCII (21 characters on current hardware, at most RF_UNIT_ID_MAX). Sent right after
- * every RF_MSG_VERSION_REPORT by remotes that report RF_CAP_UNIT_ID. */
+/* Remote -> Hub: the remote's factory identity (ACK'd). payload[0] = length, payload[1..] = the
+ * unit id as ASCII (21 characters on current hardware, at most RF_UNIT_ID_MAX; length 0 when the
+ * remote has none), payload[RF_UNIT_ID_SKIN_OFF] = the skin id of its mfg partition (0 = not
+ * reported; read only when the id is shorter than RF_UNIT_ID_SKIN_OFF). Sent right after every
+ * RF_MSG_VERSION_REPORT by remotes that report RF_CAP_UNIT_ID; older remotes pad the skin byte
+ * with 0, older Hubs ignore it. */
 #define RF_MSG_UNIT_ID             0x31
 #define RF_UNIT_ID_MAX             24
+#define RF_UNIT_ID_SKIN_OFF        24
 
 /* RF_MSG_HELP_STATUS payload[0] */
 #define RF_HELP_QUESTION           0x00  /* [1] index, [2] count, [3..10] device id, [11..24] name */

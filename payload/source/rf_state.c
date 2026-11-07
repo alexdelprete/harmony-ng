@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "rf_state.h"
+#include "rf_proto.h"
 #include "cJSON.h"
 
 #include <stdio.h>
@@ -67,20 +68,28 @@ void mark_remote_slot_active(uint8_t slot) {
 bool is_companion_slot(uint8_t slot) {
     if (slot < 1 || slot > MAX_PAIRED_REMOTES) return false;
     int idx = slot - 1;
-    if (g_paired_remotes[idx].model == REMOTE_MODEL_COMPANION ||
-        g_paired_remotes[idx].model == REMOTE_MODEL_SMART_CONTROL) return true;
-    if (g_paired_remotes[idx].equad_id == 0x401E ||
-        strstr(g_paired_remotes[idx].name, "20+") != NULL ||
-        strstr(g_paired_remotes[idx].name, "Smart") != NULL) {
-        g_paired_remotes[idx].model = REMOTE_MODEL_SMART_CONTROL;
+    paired_remote_t *r = &g_paired_remotes[idx];
+    if (r->model == REMOTE_MODEL_COMPANION || r->model == REMOTE_MODEL_SMART_CONTROL) return true;
+    if (r->model == REMOTE_MODEL_JUNIPER || r->equad_id == RF_EQUAD_JUNIPER) return false;
+    if (r->equad_id == RF_EQUAD_SMART_CONTROL) {
+        r->model = REMOTE_MODEL_SMART_CONTROL;
         return true;
     }
-    if (g_paired_remotes[idx].equad_id == 0x4026 ||
-        g_paired_remotes[idx].equad_id == 0x4027 ||
-        strstr(g_paired_remotes[idx].name, "Companion") != NULL ||
-        strstr(g_paired_remotes[idx].name, "Home") != NULL) {
-        g_paired_remotes[idx].model = REMOTE_MODEL_COMPANION;
+    if (r->equad_id == RF_EQUAD_SPRITE_A || r->equad_id == RF_EQUAD_SPRITE_B) {
+        r->model = REMOTE_MODEL_COMPANION;
         return true;
+    }
+    /* The CC2544 slot name, only while the EquadID is not known (a Juniper remote can carry
+     * "Home" in its name: Harmony Ultimate Home) */
+    if (r->equad_id == 0) {
+        if (strstr(r->name, "20+") != NULL || strstr(r->name, "Smart") != NULL) {
+            r->model = REMOTE_MODEL_SMART_CONTROL;
+            return true;
+        }
+        if (strstr(r->name, "Companion") != NULL) {
+            r->model = REMOTE_MODEL_COMPANION;
+            return true;
+        }
     }
     return false;
 }
@@ -89,9 +98,118 @@ const char *get_remote_model_name(remote_model_t model) {
     switch (model) {
         case REMOTE_MODEL_SMART_CONTROL: return "smart_control";
         case REMOTE_MODEL_COMPANION: return "companion";
-        case REMOTE_MODEL_ELITE: return "elite";
+        case REMOTE_MODEL_JUNIPER: return "juniper";
         default: return "unknown";
     }
+}
+
+/* Family from the EquadID when it names one, else the family recorded from traffic */
+static remote_model_t family_of(remote_model_t family, uint16_t equad_id) {
+    if (equad_id == RF_EQUAD_JUNIPER) return REMOTE_MODEL_JUNIPER;
+    if (equad_id == RF_EQUAD_SMART_CONTROL) return REMOTE_MODEL_SMART_CONTROL;
+    if (equad_id == RF_EQUAD_SPRITE_A || equad_id == RF_EQUAD_SPRITE_B) return REMOTE_MODEL_COMPANION;
+    if (equad_id != 0) return REMOTE_MODEL_UNKNOWN; /* 0x4024, 0x880E or anything else */
+    return family;
+}
+
+typedef struct {
+    uint8_t skin;
+    const char *id;
+    const char *name;
+} juniper_product_t;
+
+static const juniper_product_t k_juniper[] = {
+    { RF_SKIN_ULTIMATE,        "ultimate",      "Harmony Ultimate" },
+    { RF_SKIN_ULTIMATE_ONE,    "ultimate_one",  "Harmony Ultimate One" },
+    { RF_SKIN_ULTIMATE_HOME_A, "ultimate_home", "Harmony Ultimate Home" },
+    { RF_SKIN_ULTIMATE_HOME_B, "ultimate_home", "Harmony Ultimate Home" },
+    { RF_SKIN_ELITE,           "elite",         "Harmony Elite" },
+    { RF_SKIN_950,             "950",           "Harmony 950" },
+};
+
+const char *rf_model_id_for(remote_model_t family, uint16_t equad_id, uint8_t skin) {
+    switch (family_of(family, equad_id)) {
+        case REMOTE_MODEL_SMART_CONTROL: return "smart_control";
+        case REMOTE_MODEL_COMPANION: return "companion";
+        case REMOTE_MODEL_JUNIPER:
+            if (skin == 0) return "unknown"; /* never guess: unknown until the remote reports it */
+            for (size_t i = 0; i < sizeof(k_juniper) / sizeof(k_juniper[0]); i++) {
+                if (k_juniper[i].skin == skin) return k_juniper[i].id;
+            }
+            return "touch";
+        default: return "unknown";
+    }
+}
+
+const char *rf_model_name_for(remote_model_t family, uint16_t equad_id, uint8_t skin) {
+    switch (family_of(family, equad_id)) {
+        case REMOTE_MODEL_SMART_CONTROL: return "Harmony Smart Control";
+        case REMOTE_MODEL_COMPANION: return "Harmony Companion";
+        case REMOTE_MODEL_JUNIPER:
+            if (skin == 0) return NULL;
+            for (size_t i = 0; i < sizeof(k_juniper) / sizeof(k_juniper[0]); i++) {
+                if (k_juniper[i].skin == skin) return k_juniper[i].name;
+            }
+            return "Harmony Touch"; /* the stock remote UI's fallback */
+        default: return NULL;
+    }
+}
+
+const char *rf_slot_model_id(uint8_t slot) {
+    if (slot < 1 || slot > MAX_PAIRED_REMOTES) return "unknown";
+    is_companion_slot(slot); /* records a Sprite family from the EquadID or the slot name */
+    const paired_remote_t *r = &g_paired_remotes[slot - 1];
+    return rf_model_id_for(r->model, r->equad_id, g_remote_versions[slot - 1].skin);
+}
+
+const char *rf_slot_model_name(uint8_t slot) {
+    if (slot < 1 || slot > MAX_PAIRED_REMOTES) return NULL;
+    is_companion_slot(slot);
+    const paired_remote_t *r = &g_paired_remotes[slot - 1];
+    return rf_model_name_for(r->model, r->equad_id, g_remote_versions[slot - 1].skin);
+}
+
+void rf_note_slot_family(uint8_t slot, remote_model_t family) {
+    if (slot < 1 || slot > MAX_PAIRED_REMOTES) return;
+    if (g_paired_remotes[slot - 1].model == REMOTE_MODEL_UNKNOWN) g_paired_remotes[slot - 1].model = family;
+}
+
+void rf_slot_saw_protocol_frame(uint8_t slot) {
+    if (slot < 1 || slot > MAX_PAIRED_REMOTES) return;
+    if (g_paired_remotes[slot - 1].equad_id == 0) rf_note_slot_family(slot, REMOTE_MODEL_JUNIPER);
+}
+
+int rf_slot_apply_unit_id(uint8_t slot, const uint8_t *payload) {
+    if (slot < 1 || slot > MAX_PAIRED_REMOTES || !payload) return 0;
+    int idx = slot - 1;
+    size_t n = payload[0];
+    if (n > RF_UNIT_ID_MAX) n = RF_UNIT_ID_MAX;
+    char id[RF_UNIT_ID_MAX + 1] = {0};
+    size_t k = 0;
+    for (size_t i = 0; i < n; i++) {
+        uint8_t c = payload[1 + i];
+        if (c < 0x21 || c > 0x7E) break; /* printable ASCII only, no blanks */
+        id[k++] = (char)c;
+    }
+    id[k] = '\0';
+    /* the skin byte: 0 = not reported (an older remote pads it with zeros); only read when the
+     * id leaves room for it */
+    uint8_t skin = (n < RF_UNIT_ID_SKIN_OFF) ? payload[RF_UNIT_ID_SKIN_OFF] : 0;
+    int changed = 0;
+    if (k > 0 && strcmp(g_remote_versions[idx].remote_id, id) != 0) {
+        snprintf(g_remote_versions[idx].remote_id, sizeof(g_remote_versions[idx].remote_id), "%s", id);
+        printf("[*] UNIT_ID: Slot %d -> %s\n", slot, id);
+        changed = 1;
+    }
+    if (skin && g_remote_versions[idx].skin != skin) {
+        g_remote_versions[idx].skin = skin;
+        {
+            const char *mn = rf_slot_model_name(slot);
+            printf("[*] SKIN: Slot %d -> 0x%02X (%s)\n", slot, skin, mn ? mn : "unknown product");
+        }
+        changed = 1;
+    }
+    return changed;
 }
 
 /* write() until everything is out (a socket may take a large buffer in pieces) */
@@ -194,13 +312,14 @@ int rf_state_version_json(int slot, char *buf, size_t len) {
     if (slot < 1 || slot > MAX_PAIRED_REMOTES || !buf) return -1;
     const remote_version_t *v = &g_remote_versions[slot - 1];
     int n;
-    if (v->remote_id[0]) {
-        n = snprintf(buf, len, "{\"slot\":%d,\"version\":\"%s\",\"config_version\":%d,\"caps\":%d,\"remote_id\":\"%s\",\"timestamp\":%ld}\n",
-                     slot, v->sw_version, v->config_version, v->caps, v->remote_id, (long)time(NULL));
-    } else {
-        n = snprintf(buf, len, "{\"slot\":%d,\"version\":\"%s\",\"config_version\":%d,\"caps\":%d,\"timestamp\":%ld}\n",
-                     slot, v->sw_version, v->config_version, v->caps, (long)time(NULL));
+    char extra[80] = "";
+    if (v->remote_id[0]) snprintf(extra, sizeof(extra), ",\"remote_id\":\"%s\"", v->remote_id);
+    if (v->skin) {
+        size_t el = strlen(extra);
+        snprintf(extra + el, sizeof(extra) - el, ",\"skin\":%u", (unsigned)v->skin);
     }
+    n = snprintf(buf, len, "{\"slot\":%d,\"version\":\"%s\",\"config_version\":%d,\"caps\":%d%s,\"timestamp\":%ld}\n",
+                 slot, v->sw_version, v->config_version, v->caps, extra, (long)time(NULL));
     return (n > 0 && (size_t)n < len) ? n : -1;
 }
 
@@ -231,6 +350,8 @@ void rf_state_load_version_file(int slot) {
             cJSON *jcv = cJSON_GetObjectItem(vroot, "config_version");
             cJSON *jcaps = cJSON_GetObjectItem(vroot, "caps");
             cJSON *jid = cJSON_GetObjectItem(vroot, "remote_id");
+            cJSON *jskin = cJSON_GetObjectItem(vroot, "skin");
+            if (cJSON_IsNumber(jskin) && jskin->valueint > 0 && jskin->valueint < 256) v->skin = (uint8_t)jskin->valueint;
             if (cJSON_IsNumber(jcaps)) v->caps = (uint8_t)jcaps->valueint;
             if (jv && cJSON_IsString(jv) && jv->valuestring) snprintf(v->sw_version, sizeof(v->sw_version), "%s", jv->valuestring);
             if (jcv && cJSON_IsNumber(jcv)) v->config_version = (uint8_t)jcv->valueint;
