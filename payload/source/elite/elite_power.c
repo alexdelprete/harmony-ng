@@ -368,11 +368,12 @@ void read_elite_battery(void) {
         }
         fclose(fp);
     }
+    /* Debounced: lifting the remote off the cradle or setting it down flips the charger and
+     * power source readings several times within seconds (elite_battery.h) */
+    if (s_filtered_pct == 0xFF) elite_battery_filter_init(&s_batt_filter);
+    bool chg_transition = false;
+    is_charging = elite_battery_charging(&s_batt_filter, is_charging != 0, now_ms, &chg_transition) ? 1 : 0;
     g_battery_info.charging = is_charging;
-
-    static uint8_t s_last_charging_flag = 0xFF;
-    bool chg_transition = (s_last_charging_flag != 0xFF && s_last_charging_flag != is_charging);
-    s_last_charging_flag = is_charging;
 
     if (s_batt_sample_num == 0 || chg_transition) {
         for (int i = 0; i < BATT_SAMPLE_COUNT; i++) {
@@ -397,7 +398,6 @@ void read_elite_battery(void) {
      * load, so a wake no longer walks it down 2 points at a time */
     bool rested = !g_screen_on && s_last_blank_time_ms > 0 &&
                   now_ms - s_last_blank_time_ms >= ELITE_BATT_REST_MS;
-    if (s_filtered_pct == 0xFF) elite_battery_filter_init(&s_batt_filter);
     s_filtered_pct = elite_battery_filter_step(&s_batt_filter, g_battery_info.voltage_mv, is_charging,
                                                chg_transition, rested, now_ms);
     g_battery_info.percent = s_filtered_pct;
