@@ -40,6 +40,7 @@ Returns high-level hub status, firmware, identity, active activity, memory, upti
     "total_kb": 5120,
     "free_kb": 1372,
     "uptime_sec": 34821,
+    "boot_time": 1762352379,
     "mqtt": {
       "connected": true,
       "broker": "192.168.1.50",
@@ -55,6 +56,12 @@ Returns high-level hub status, firmware, identity, active activity, memory, upti
     characters, logged as a warning) only when the partition has no unit id.
   - `api_version`: `2` from milestone 1 of the integration work on; it changes only on a breaking
     change to an existing endpoint or message. Additions are announced through `capabilities`.
+  - `uptime_sec`: seconds since boot, right when the object was built. `boot_time`: the boot time as
+    a Unix epoch, `null` while the Hub's clock is not set yet (it starts at 1970 and `hub_sntp` sets
+    it after the network is up). Use `boot_time` for anything stored or retained: `uptime_sec` from
+    an older copy of the object gives a wrong boot time. The same two fields are in the snapshot's
+    `hub` object (10.14) and the retained MQTT `<base>/hub` (8.1), which is published again once the
+    clock is set.
   - `capabilities`: flags of the features compiled into this firmware, independent of settings:
     `events` (event bus, pushed WebSocket messages 10.8 to 10.13), `snapshot` (10.14), `ws_auth`
     (11.4), `ws_keepalive` (10.15), `ir_raw` (5.4), `rf_wake` (`POST /api/rf/wake`).
@@ -1046,7 +1053,7 @@ devices are kept (below).
 | Topic | Retained | QoS | Payload |
 | --- | --- | --- | --- |
 | `<base>/status` | yes | 1 | `online` / `offline` (last will) |
-| `<base>/hub` | yes | 1 | `{"type":"hub", ...}`: the `hub` object of the snapshot (10.14) plus `ip`, `device_count` and `command_count` |
+| `<base>/hub` | yes | 1 | `{"type":"hub", ...}`: the `hub` object of the snapshot (10.14) plus `ip`, `device_count`, `command_count` and `ts`; published on connect, on the Home Assistant birth message, on a config change, and again when the clock is set or jumps (so `boot_time` and `ts` are real times in the retained copy) |
 | `<base>/activity_state` | yes | 1 | `activity_state` (10.8) |
 | `<base>/progress` | no | 0 | `activity_progress` (10.9) |
 | `<base>/bt` | yes | 1 | `bt_status` (10.11) |
@@ -1554,7 +1561,7 @@ refetch over REST. The frame can exceed 4 KB (outbound frames may be up to 64 KB
   "msgId": 8,
   "hub": {"hub_id": "20140101120000-000001", "hub_name": "Living Room Hub", "version": "2.2.0",
           "api_version": 2, "capabilities": ["events", "snapshot", "ws_auth", "ws_keepalive", "ir_raw", "rf_wake"],
-          "auth_enabled": false, "uptime_sec": 34821, "legacy_enabled": false, "mdns_enabled": false},
+          "auth_enabled": false, "uptime_sec": 34821, "boot_time": 1762352379, "legacy_enabled": false, "mdns_enabled": false},
   "activity_state": {"type": "activity_state", "activity": "-1", "state": 0, "stateName": "idle", "busy": false, "sending": false, "seq": 3, "ts": 1762387100},
   "bt_status": {"type": "bt_status", "seq": 20, "ts": 1762387200, "...": "..."},
   "rf_status": {"type": "rf_status", "seq": 21, "ts": 1762387200, "...": "..."},

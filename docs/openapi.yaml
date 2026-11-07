@@ -126,7 +126,7 @@ paths:
             description: First frame after the upgrade and the reply to get_snapshot
             example:
               type: snapshot
-              hub: {hub_id: "20140101120000-000001", hub_name: Living Room Hub, version: 2.2.0, api_version: 2, capabilities: [events, snapshot, ws_auth, ws_keepalive, ir_raw, rf_wake], auth_enabled: false, uptime_sec: 34821, legacy_enabled: false, mdns_enabled: false}
+              hub: {hub_id: "20140101120000-000001", hub_name: Living Room Hub, version: 2.2.0, api_version: 2, capabilities: [events, snapshot, ws_auth, ws_keepalive, ir_raw, rf_wake], auth_enabled: false, uptime_sec: 34821, boot_time: 1762352379, legacy_enabled: false, mdns_enabled: false}
               activity_state: {type: activity_state, activity: "-1", state: 0, stateName: idle, busy: false, sending: false, seq: 3, ts: 1762387100}
               bt_status: null
               rf_status: null
@@ -167,6 +167,7 @@ paths:
                 total_kb: 5120
                 free_kb: 1372
                 uptime_sec: 10421
+                boot_time: 1762352379
                 updating: false
                 auth_enabled: false
                 role: admin

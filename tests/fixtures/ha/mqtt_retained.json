@@ -79,6 +79,7 @@
     ],
     "legacy_enabled": false,
     "mdns_enabled": true,
+    "boot_time": 1793949507,
     "auth_enabled": false,
     "uptime_sec": 10402,
     "ts": 1793959909
