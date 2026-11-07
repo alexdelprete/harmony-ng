@@ -247,6 +247,7 @@ Pages have no Back item: swipe left to right, or press `Back`, to return to the 
   - Sysfs accelerometer rate when remote is in active or near-standby state.
 - **`Battery Status`**: `[ XX% XXXXmV ]`.
   - Refreshes live hardware voltage and battery percentage filtered via a 16-sample moving average window.
+  - The percentage (`elite_battery.c`): a rested reading (screen off for 30 s) sets it; under load it never rises and falls by at most one point per 2 minutes, because the cell sags 0.1 to 0.15 V within seconds of the screen turning on; while charging it rises at once. The remote reports the battery every 5 minutes, at once on a charging change, and with the screen on for a change of 2 points or more, at most once a minute.
 
 ### 5. `SYSTEM`
 - **`Software Version`**: Displays current firmware version string (e.g. `v1.3.0`).
