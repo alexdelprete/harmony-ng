@@ -55,7 +55,7 @@
       "slot": 2,
       "name": "Harmony Remote (Slot 2)",
       "model": "unknown",
-      "model_name": "Harmony Remote",
+      "model_name": null,
       "skin": null,
       "equad_id": null,
       "has_screen": true,

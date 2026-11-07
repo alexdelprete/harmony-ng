@@ -878,8 +878,9 @@ Returns CC2544 radio state, paired remote slots, model identification, screen ca
   their EquadID. Never guessed from traffic.
 - `slots[].model_name`: the product name as the stock remote UI shows it ("Harmony Ultimate",
   "Harmony Ultimate One", "Harmony Ultimate Home", "Harmony Elite", "Harmony 950",
-  "Harmony Touch", "Harmony Companion", "Harmony Smart Control"), "Harmony Remote" while unknown.
-  `slots[].name` is `"<model_name> (Slot N)"` (the CC2544's slot name while the model is unknown).
+  "Harmony Touch", "Harmony Companion", "Harmony Smart Control"), `null` while unknown.
+  `slots[].name` is `"<model_name> (Slot N)"`; while the model is unknown, the CC2544's slot name
+  or "Harmony Remote".
 - `slots[].skin`: the skin id the remote reported (an integer, `null` when not reported).
 - `slots[].equad_id`: the EquadID the Hub's CC2544 reports for the slot (an integer: 16417 =
   `0x4021` touchscreen remotes, 16414 = `0x401E` Smart Control, 16422 / 16423 = `0x4026` /

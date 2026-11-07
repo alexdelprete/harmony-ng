@@ -63,22 +63,25 @@ int rf_build_status_json(char *body, size_t len, unsigned flags) {
     if (strcmp(model1, "unknown") == 0 && g_paired_remotes[0].name[0]) {
         snprintf(name1, sizeof(name1), "%s (Slot 1)", g_paired_remotes[0].name);
     } else {
-        snprintf(name1, sizeof(name1), "%s (Slot 1)", mname1);
+        snprintf(name1, sizeof(name1), "%s (Slot 1)", mname1 ? mname1 : "Harmony Remote");
     }
     if (strcmp(model2, "unknown") == 0 && g_paired_remotes[1].name[0]) {
         snprintf(name2, sizeof(name2), "%s (Slot 2)", g_paired_remotes[1].name);
     } else {
-        snprintf(name2, sizeof(name2), "%s (Slot 2)", mname2);
+        snprintf(name2, sizeof(name2), "%s (Slot 2)", mname2 ? mname2 : "Harmony Remote");
     }
 
-    /* skin and equad_id: integers, null when not known */
-    char ident_json[MAX_PAIRED_REMOTES][96];
+    /* model_name: a string, null when the product is unknown; skin and equad_id: integers,
+     * null when not known */
+    char ident_json[MAX_PAIRED_REMOTES][112];
     for (int i = 0; i < MAX_PAIRED_REMOTES; i++) {
-        char skin_s[8] = "null", equad_s[8] = "null";
+        char skin_s[8] = "null", equad_s[8] = "null", mname_s[40] = "null";
+        const char *mn = (i == 0) ? mname1 : mname2;
+        if (mn) snprintf(mname_s, sizeof(mname_s), "\"%s\"", mn);
         if (g_remote_versions[i].skin) snprintf(skin_s, sizeof(skin_s), "%u", (unsigned)g_remote_versions[i].skin);
         if (g_paired_remotes[i].equad_id) snprintf(equad_s, sizeof(equad_s), "%u", (unsigned)g_paired_remotes[i].equad_id);
-        snprintf(ident_json[i], sizeof(ident_json[i]), ",\"model_name\":\"%s\",\"skin\":%s,\"equad_id\":%s",
-                 i == 0 ? mname1 : mname2, skin_s, equad_s);
+        snprintf(ident_json[i], sizeof(ident_json[i]), ",\"model_name\":%s,\"skin\":%s,\"equad_id\":%s",
+                 mname_s, skin_s, equad_s);
     }
 
     if ((flags & RF_STATUS_QUERY_RADIO) &&
