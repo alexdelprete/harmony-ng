@@ -149,8 +149,8 @@ const char *get_remote_model_name(remote_model_t model);
 /* Product of a remote, from its family, EquadID (0 = not known) and skin id (0 = not reported).
  * model id: ultimate, ultimate_one, ultimate_home, elite, 950, touch (a Juniper skin the stock
  * table does not list), companion, smart_control or unknown; a Juniper remote without a skin id
- * is unknown. model name: the stock product name ("Harmony Ultimate", ...), "Harmony Remote"
- * when unknown. */
+ * is unknown. model name: the stock product name ("Harmony Ultimate", ...), NULL
+ * when unknown (clients have their own fallback). */
 const char *rf_model_id_for(remote_model_t family, uint16_t equad_id, uint8_t skin);
 const char *rf_model_name_for(remote_model_t family, uint16_t equad_id, uint8_t skin);
 /* The same for a slot (1-based) from g_paired_remotes and g_remote_versions */

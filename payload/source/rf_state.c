@@ -146,12 +146,12 @@ const char *rf_model_name_for(remote_model_t family, uint16_t equad_id, uint8_t 
         case REMOTE_MODEL_SMART_CONTROL: return "Harmony Smart Control";
         case REMOTE_MODEL_COMPANION: return "Harmony Companion";
         case REMOTE_MODEL_JUNIPER:
-            if (skin == 0) return "Harmony Remote";
+            if (skin == 0) return NULL;
             for (size_t i = 0; i < sizeof(k_juniper) / sizeof(k_juniper[0]); i++) {
                 if (k_juniper[i].skin == skin) return k_juniper[i].name;
             }
             return "Harmony Touch"; /* the stock remote UI's fallback */
-        default: return "Harmony Remote";
+        default: return NULL;
     }
 }
 
@@ -163,7 +163,7 @@ const char *rf_slot_model_id(uint8_t slot) {
 }
 
 const char *rf_slot_model_name(uint8_t slot) {
-    if (slot < 1 || slot > MAX_PAIRED_REMOTES) return "Harmony Remote";
+    if (slot < 1 || slot > MAX_PAIRED_REMOTES) return NULL;
     is_companion_slot(slot);
     const paired_remote_t *r = &g_paired_remotes[slot - 1];
     return rf_model_name_for(r->model, r->equad_id, g_remote_versions[slot - 1].skin);
@@ -203,7 +203,10 @@ int rf_slot_apply_unit_id(uint8_t slot, const uint8_t *payload) {
     }
     if (skin && g_remote_versions[idx].skin != skin) {
         g_remote_versions[idx].skin = skin;
-        printf("[*] SKIN: Slot %d -> 0x%02X (%s)\n", slot, skin, rf_slot_model_name(slot));
+        {
+            const char *mn = rf_slot_model_name(slot);
+            printf("[*] SKIN: Slot %d -> 0x%02X (%s)\n", slot, skin, mn ? mn : "unknown product");
+        }
         changed = 1;
     }
     return changed;

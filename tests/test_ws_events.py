@@ -191,7 +191,7 @@ def rf_status_sample(percent=80, frames_rx=10, voltage=3950):
                  "active": True, "in_sync": True, "address": "E5F60718", "rf_address": "E5F60718", "sw_version": "2.3.0",
                  "config_version": 7, "battery": {"percent": percent, "charging": False, "voltage_mv": voltage},
                  "link": {"frames_rx": frames_rx, "acked_sent": 1, "acked_ok": 1, "retries": 0, "naks": 0, "last_seen_s": 2}},
-                {"slot": 2, "name": "Harmony Remote (Slot 2)", "model": "unknown", "model_name": "Harmony Remote",
+                {"slot": 2, "name": "Harmony Remote (Slot 2)", "model": "unknown", "model_name": None,
                  "skin": None, "equad_id": None, "has_screen": True, "supports_ota": True,
                  "active": False, "in_sync": False, "address": "None", "rf_address": "None", "sw_version": "unknown",
                  "config_version": 0, "battery": {"percent": 0, "charging": False, "voltage_mv": 0},

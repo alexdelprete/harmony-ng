@@ -21,6 +21,8 @@ static int g_failures;
 #define CHECK(cond, msg) do { if (!(cond)) { g_failures++; printf("  FAIL %s (line %d)\n", msg, __LINE__); } } while (0)
 #define CHECK_STR(got, want, msg) do { const char *g_ = (got); if (strcmp(g_, (want)) != 0) { g_failures++; \
     printf("  FAIL %s: got '%s', want '%s' (line %d)\n", msg, g_, (want), __LINE__); } } while (0)
+#define CHECK_NULL(got, msg) do { const char *g_ = (got); if (g_ != NULL) { g_failures++; \
+    printf("  FAIL %s: got '%s', want NULL (line %d)\n", msg, g_, __LINE__); } } while (0)
 
 static void reset(void) {
     memset(g_paired_remotes, 0, sizeof(g_paired_remotes));
@@ -73,7 +75,9 @@ int main(void) {
     /* families the Hub does not drive */
     CHECK_STR(rf_model_id_for(REMOTE_MODEL_UNKNOWN, RF_EQUAD_4024, 0x64), "unknown", "0x4024");
     CHECK_STR(rf_model_id_for(REMOTE_MODEL_UNKNOWN, RF_EQUAD_USB_DONGLE, 0), "unknown", "0x880E");
-    CHECK_STR(rf_model_name_for(REMOTE_MODEL_UNKNOWN, 0, 0), "Harmony Remote", "unknown name");
+    CHECK_NULL(rf_model_name_for(REMOTE_MODEL_UNKNOWN, 0, 0), "unknown name");
+    CHECK_NULL(rf_model_name_for(REMOTE_MODEL_JUNIPER, RF_EQUAD_JUNIPER, 0), "Juniper without skin: no name");
+    CHECK_NULL(rf_model_name_for(REMOTE_MODEL_UNKNOWN, RF_EQUAD_4024, 0x64), "0x4024: no name");
 
     /* 2. a Juniper slot: unknown until the skin arrives, then the product, kept across frames */
     reset();
@@ -87,6 +91,8 @@ int main(void) {
     if (s) {
         CHECK_STR(cJSON_GetObjectItem(s, "model")->valuestring, "unknown", "Juniper slot before the skin");
         CHECK(cJSON_IsNull(cJSON_GetObjectItem(s, "skin")), "skin null before it is reported");
+        CHECK(cJSON_IsNull(cJSON_GetObjectItem(s, "model_name")), "model_name null while unknown");
+        CHECK_STR(cJSON_GetObjectItem(s, "name")->valuestring, "Harmony Home (Slot 1)", "slot name from the CC2544 while unknown");
         CHECK(cJSON_GetObjectItem(s, "equad_id")->valueint == 0x4021, "equad_id 16417");
         CHECK(cJSON_IsTrue(cJSON_GetObjectItem(s, "has_screen")), "a Juniper remote has a screen");
         cJSON_Delete(s);

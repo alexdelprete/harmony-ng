@@ -1938,7 +1938,7 @@ paths:
       description: |
         Proxied to hub_rf (port 8092). Returns remote RF status, paired slots, battery telemetry, and RF link statistics (frames_rx, acked_sent, acked_ok, retries, naks, last_seen_s).
         Per slot, the product: model (ultimate, ultimate_one, ultimate_home, elite, 950, touch,
-        companion, smart_control, unknown), model_name (the stock product name, "Harmony Remote"
+        companion, smart_control, unknown), model_name (the stock product name, null
         while unknown), skin (the skin id a touchscreen remote reports, null when not reported) and
         equad_id (the CC2544's EquadID for the slot, null when not known: 16417 = 0x4021
         touchscreen remotes, 16414 = 0x401E Smart Control, 16422 / 16423 Companion). A touchscreen
