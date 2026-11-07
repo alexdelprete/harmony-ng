@@ -180,17 +180,19 @@ def test_button_events(hub):
 
 
 def rf_status_sample(percent=80, frames_rx=10, voltage=3950):
-    return {"running": True, "ok": True, "fw_version": "v72.00", "paired": True, "rf_address": "A1B2C3D4",
+    return {"running": True, "ok": True, "fw_version": "v39.00", "paired": True, "rf_address": "A1B2C3D4",
             "hub_rf_address": "A1B2C3D4", "pairing_active": False, "sync_pending": False, "sync_pending_slot": 0,
             "sync_pending_diff": "", "hub_config_version": 7,
             "ota": {"in_progress": False, "slot": 0, "status": 0, "sent_bytes": 0, "total_bytes": 0,
                     "sent_chunks": 0, "total_chunks": 0, "error": ""},
             "slots": [
-                {"slot": 1, "name": "Harmony Remote (Slot 1)", "model": "elite", "has_screen": True, "supports_ota": True,
-                 "active": True, "in_sync": True, "address": "E5F60718", "rf_address": "E5F60718", "sw_version": "2.2.0",
+                {"slot": 1, "name": "Harmony Ultimate (Slot 1)", "model": "ultimate", "model_name": "Harmony Ultimate",
+                 "skin": 100, "equad_id": 16417, "has_screen": True, "supports_ota": True,
+                 "active": True, "in_sync": True, "address": "E5F60718", "rf_address": "E5F60718", "sw_version": "2.3.0",
                  "config_version": 7, "battery": {"percent": percent, "charging": False, "voltage_mv": voltage},
                  "link": {"frames_rx": frames_rx, "acked_sent": 1, "acked_ok": 1, "retries": 0, "naks": 0, "last_seen_s": 2}},
-                {"slot": 2, "name": "Harmony Elite (Slot 2)", "model": "unknown", "has_screen": True, "supports_ota": True,
+                {"slot": 2, "name": "Harmony Remote (Slot 2)", "model": "unknown", "model_name": "Harmony Remote",
+                 "skin": None, "equad_id": None, "has_screen": True, "supports_ota": True,
                  "active": False, "in_sync": False, "address": "None", "rf_address": "None", "sw_version": "unknown",
                  "config_version": 0, "battery": {"percent": 0, "charging": False, "voltage_mv": 0},
                  "link": {"frames_rx": 0, "acked_sent": 0, "acked_ok": 0, "retries": 0, "naks": 0, "last_seen_s": -1}}]}
