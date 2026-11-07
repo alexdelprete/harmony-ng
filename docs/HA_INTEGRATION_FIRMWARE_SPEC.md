@@ -975,13 +975,21 @@ Reference shapes of the six bus events as sent on the WebSocket and as MQTT payl
 {"type":"activity_state","activity":"123456","state":2,"stateName":"running","busy":false,"sending":false,"seq":1,"ts":0}
 {"type":"activity_progress","activity":"123456","activityId":"123456","state":"starting","stateCode":1,"step":2,"currentStep":2,"total":6,"totalSteps":6,"desc":"TV PowerOn","stepDesc":"TV PowerOn","seq":2,"ts":0}
 {"type":"config_changed","files":["devices"],"seq":3,"ts":0}
-{"type":"bt_status","ok":true,"running":true,"connected":true,"target":"AA:BB:CC:DD:EE:FF","devices":[{"bdaddr":"AA:BB:CC:DD:EE:FF","name":"Apple TV"}],"seq":4,"ts":0}
-{"type":"rf_status","ok":true,"running":true,"state":"running","connected":true,"pairing_active":false,"paired":true,"slots":[{"slot":1,"active":true,"remote_id":"20141001120000-000002","model":"Harmony Ultimate","has_screen":true,"battery":{"percent":87,"charging":false,"voltage_mv":3980},"config_version":12,"hub_config_version":12,"in_sync":true,"link":{"last_seen_s":2}}],"seq":5,"ts":0}
+{"type":"bt_status","backend":"btstack","pid":1234,"state":"connecting","target":"11:22:33:44:55:66","remote":{"connected":true,"addr":"11:22:33:44:55:66"},"host":{"connected":true,"addr":"AA:BB:CC:DD:EE:FF","name":"Media Player","pairing":false},"hosts":[{"addr":"AA:BB:CC:DD:EE:01","name":"Television","connected":false,"paired":true,"cid":2},{"addr":"AA:BB:CC:DD:EE:FF","name":"Media Player","connected":true,"paired":true,"cid":6}],"ok":true,"running":true,"connected":true,"pairing":false,"seq":4,"ts":0}
+{"type":"rf_status","ok":true,"running":true,"state":"running","connected":true,"pairing_active":false,"paired":true,"slots":[{"slot":1,"active":true,"remote_id":"20141001120000-000002","model":"ultimate","model_name":"Harmony Ultimate","skin":100,"equad_id":16417,"has_screen":true,"battery":{"percent":87,"charging":false,"voltage_mv":3980},"config_version":12,"hub_config_version":12,"in_sync":true,"link":{"last_seen_s":2}}],"seq":5,"ts":0}
 {"type":"button","slot":1,"button":"VolumeUp","action":"press","source":"elite_rf","deviceId":"70321456","command":"VolumeUp","seq":6,"ts":0}
 ```
 
-The `rf_status` slot object is whatever `hub_rf` returns today plus nothing new; the fields shown
-are the ones the integration reads (`slot`, `active`, `remote_id`, `model`, `battery.percent`,
+The `bt_status` object is `hub_btstack`'s status file plus four fields `hub_daemon` adds: `ok`,
+`running` (the `hub_btstack` process is alive), `connected` (any host connected) and `pairing`.
+Each paired host is an entry of `hosts` keyed by `addr`, with `name`, `connected` and `paired`;
+`host` is the host keys go to. `target` and `remote` are the Bluetooth LE remote, not a host, and
+`state` is that link's state. There is no `devices` list and no `bdaddr` field (an earlier version
+of this appendix showed both).
+
+The `rf_status` slot object is whatever `hub_rf` returns today plus nothing new; `model` is an id
+(`ultimate`, `elite`, ..., `unknown`), `model_name` the product name or `null` while unknown. The
+fields shown are the ones the integration reads (`slot`, `active`, `remote_id`, `model`, `battery.percent`,
 `battery.charging`, `battery.voltage_mv`, `in_sync`, `config_version`, `hub_config_version`). If a
 listed field does not exist in `hub_rf`'s status today, add it.
 
