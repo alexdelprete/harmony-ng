@@ -115,7 +115,7 @@ paths:
             example: {type: config_changed, seq: 19, ts: 1762387200, files: [devices]}
           bt_status:
             description: The GET /api/bt-status object when it changed
-            example: {type: bt_status, seq: 20, ts: 1762387200, ok: true, running: true, connected: true, target: "AA:BB:CC:DD:EE:FF", hosts: []}
+            example: {type: bt_status, seq: 20, ts: 1762387200, ok: true, running: true, connected: true, pairing: false, hosts: [{addr: "AA:BB:CC:DD:EE:FF", name: Media Player, connected: true, paired: true, cid: 6}]}
           rf_status:
             description: The GET /api/rf/status object when it changed (link counters and battery.voltage_mv are not changes)
             example: {type: rf_status, seq: 21, ts: 1762387200, ok: true, slots: []}
@@ -1737,17 +1737,23 @@ paths:
       summary: Bluetooth stack and pairing status
       responses:
         '200':
-          description: BT connection state
+          description: hub_btstack's status plus ok, running, connected and pairing (docs/API.md 6.1)
           content:
             application/json:
               example:
+                backend: btstack
+                pid: 1234
+                state: connecting
+                target: "11:22:33:44:55:66"
+                remote: {connected: true, addr: "11:22:33:44:55:66"}
+                host: {connected: true, addr: "AA:BB:CC:DD:EE:FF", name: Media Player, pairing: false}
+                hosts:
+                  - {addr: "AA:BB:CC:DD:EE:01", name: Television, connected: false, paired: true, cid: 2}
+                  - {addr: "AA:BB:CC:DD:EE:FF", name: Media Player, connected: true, paired: true, cid: 6}
                 ok: true
                 running: true
                 connected: true
-                target: "AA:BB:CC:DD:EE:FF"
-                devices:
-                  - bdaddr: "AA:BB:CC:DD:EE:FF"
-                    name: Apple TV
+                pairing: false
 
   /api/bt-pairing:
     post:
