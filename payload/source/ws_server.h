@@ -82,6 +82,8 @@ void ws_remove_client(int client_fd);
  * 2 admin). Unknown clients and clients upgraded without auth count as admin. */
 void ws_set_client_role(int client_fd, int role);
 int ws_get_client_role(int client_fd);
+/* 1 while client_fd is a connected WebSocket client */
+int ws_is_client(int client_fd);
 
 /* Close all connected clients */
 void ws_close_all(void);
