@@ -13,6 +13,7 @@
 #include "hub_ssdp.h"
 #include "hub_ws.h"
 #include "hub_mqtt.h"
+#include "hub_cmd.h"
 #include "hub_ntp.h"
 #include "http_api_system.h"
 #include "harmony_version.h"
@@ -328,6 +329,7 @@ int main(int argc, char **argv) {
 
         /* Tick MQTT client packet reader, keepalive, and periodic state poll */
         hub_mqtt_tick();
+        hub_cmd_poll();     /* replies of slow command-channel actions (update_check) */
     }
 
     printf("\n[*] Shutting down hub_daemon...\n");

@@ -1138,7 +1138,8 @@ is executed and not answered. Actions and fields mirror the WebSocket actions (s
 `ping`, `get_state`, `get_snapshot` (the reply carries the snapshot), `start_activity` (`activity`),
 `stop_activity`, `cancel_activity`, `send_command` (`deviceId`, `command`, `status` = `press`,
 `hold`, `release` or omitted for a tap), `bt_key` (`key`, `keyAction`, `target`), `bt_text`,
-`bt_mouse`, `rf_wake` (`slot`), `rf_sleep` (`slot`), `sync`, `ir_raw` (fields of 5.4).
+`bt_mouse`, `rf_wake` (`slot`), `rf_sleep` (`slot`), `sync`, `ir_raw` (fields of 5.4),
+`update_check`, `update_apply`, `activity_help`, `activity_help_answer` (10.6a, 10.6b).
 
 Reply on `<base>/cmd/response`:
 ```json
@@ -1146,7 +1147,12 @@ Reply on `<base>/cmd/response`:
 {"type": "cmd_response", "id": "c7d1", "action": "start_activity", "ok": false, "code": 409, "error": "busy"}
 {"type": "cmd_response", "id": "c7d2", "action": "get_state", "ok": true, "activity_state": {...}}
 ```
-Codes and errors equal the REST ones (400 bad input, 409 busy, 503 a service is not running).
+Codes and errors equal the REST ones (400 bad input, 404 not found, 409 busy, 503 a service is not
+running). An ack carries the fields of the REST reply as well (`count` and `duration_ms` for
+`ir_raw`, the update and Help fields), on MQTT next to `ok`:
+```json
+{"type": "cmd_response", "id": "u1", "action": "update_check", "ok": true, "current_version": "2.3.0", "remote_version": "2.4.0", "update_available": true, "updating": false, "message": "Update available: v2.4.0 (Current: v2.3.0)", "...": "..."}
+```
 Malformed JSON is answered with `code` 400 when an `id` can be recovered, otherwise logged.
 
 ### 8.2 Wi-Fi Scanning & Configuration
@@ -1378,6 +1384,52 @@ Connect via WebSocket to `ws://<hub_ip>:8089/ws` or `ws://<hub_ip>/ws`.
   "ok": true,
   "msgId": 6
 }
+```
+
+#### 10.6a Firmware Update Check and Install
+`update_check` runs the check of `POST /api/update-check` (optional `repo`, `token`,
+`remote_version`, as there) and answers with the fields of `GET /api/update-status` read after the
+check, plus the check's `message`. The check runs `update.sh check` or downloads the published
+version, which takes seconds: the action runs it on a thread and the reply comes when it ends
+(other actions are answered meanwhile). One check at a time; another request meanwhile gets
+`409`. `update_apply` starts `POST /api/update-apply` (optional `repo`, `token`) and answers at
+once with its `status` (`applying`) and `message`; the Hub restarts its services when the update
+is installed. Both are admin actions, like their REST endpoints.
+```json
+{"action": "update_check", "msgId": 41}
+```
+**Response** (when the check ended):
+```json
+{
+  "type": "ack",
+  "action": "update_check",
+  "ok": true,
+  "msgId": 41,
+  "current_version": "2.3.0",
+  "remote_version": "2.4.0",
+  "update_available": true,
+  "updating": false,
+  "message": "Update available: v2.4.0 (Current: v2.3.0)",
+  "commit": "...", "firmware": "...", "local_version": "...", "build_time": "..."
+}
+```
+
+#### 10.6b Activity Help
+`activity_help` is `POST /api/activity/help`: re-sends the running activity's commands except
+power toggles and lists the devices with a power toggle to ask about (`activity`, defaults to the
+running one; `dry_run` returns the steps as `preview` and sends nothing). `activity_help_answer`
+is `POST /api/activity/help/answer` (`device`, `on`): for `on: false` the device's power toggle is
+sent; only devices the last Help listed, one answer each (`404` otherwise). A Help on an activity
+that is not running gets `409`.
+```json
+{"action": "activity_help", "msgId": 51}
+{"action": "activity_help_answer", "device": "2", "on": false, "msgId": 52}
+```
+**Responses**:
+```json
+{"type": "ack", "action": "activity_help", "ok": true, "msgId": 51, "activity": "11",
+ "toggleDevices": [{"id": "2", "name": "Media Player", "command": "PowerToggle"}]}
+{"type": "ack", "action": "activity_help_answer", "ok": true, "msgId": 52, "sent": true}
 ```
 
 #### 10.7 Bluetooth HID Key Simulation
