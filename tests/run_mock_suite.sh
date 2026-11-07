@@ -38,6 +38,7 @@ gcc -Wall -O2 \
     "$REPO_ROOT/payload/source/elite/elite_i18n.c" \
     "$REPO_ROOT/payload/source/elite/elite_input.c" \
     "$REPO_ROOT/payload/source/elite/elite_power.c" \
+    "$REPO_ROOT/payload/source/elite/elite_battery.c" \
     "$REPO_ROOT/payload/source/elite/elite_present.c" \
     "$REPO_ROOT/payload/source/elite/elite_rf.c" \
     "$REPO_ROOT/payload/source/elite/elite_rf_ota.c" \
@@ -72,6 +73,7 @@ LD_PRELOAD="$BUILD_DIR/libmock_hardware.so" \
 echo "[-] Running core component unit tests..."
 gcc -Wall -O2 -I"$REPO_ROOT/payload/source" -o "$BUILD_DIR/test_activity_icons" "$SCRIPT_DIR/test_activity_icons.c" && "$BUILD_DIR/test_activity_icons"
 gcc -Wall -O2 -I"$REPO_ROOT/payload/source" -o "$BUILD_DIR/test_elite_i18n" "$SCRIPT_DIR/test_elite_i18n.c" "$REPO_ROOT/payload/source/elite/elite_i18n.c" && "$BUILD_DIR/test_elite_i18n"
+gcc -Wall -O2 -I"$REPO_ROOT/payload/source/elite" -o "$BUILD_DIR/test_elite_battery" "$SCRIPT_DIR/test_elite_battery.c" "$REPO_ROOT/payload/source/elite/elite_battery.c" && "$BUILD_DIR/test_elite_battery"
 gcc -Wall -O2 -I"$REPO_ROOT/payload/source" -o "$BUILD_DIR/test_custom_icon_registry" "$SCRIPT_DIR/test_custom_icon_registry.c" "$REPO_ROOT/payload/source/custom_icon_registry.c" "$REPO_ROOT/payload/source/cJSON.c" "$REPO_ROOT/payload/source/sha256.c" -lm && LD_PRELOAD="$BUILD_DIR/libmock_hardware.so" "$BUILD_DIR/test_custom_icon_registry"
 gcc -Wall -O2 -I"$REPO_ROOT/payload/source" -o "$BUILD_DIR/test_sanitize_activity_steps" "$SCRIPT_DIR/test_sanitize_activity_steps.c" "$REPO_ROOT/payload/source/config_sanitize.c" "$REPO_ROOT/payload/source/cJSON.c" -lm && "$BUILD_DIR/test_sanitize_activity_steps"
 gcc -Wall -O2 -I"$REPO_ROOT/payload/source" -o "$BUILD_DIR/test_sha256" "$SCRIPT_DIR/test_sha256.c" "$REPO_ROOT/payload/source/sha256.c" && "$BUILD_DIR/test_sha256"
