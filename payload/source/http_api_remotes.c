@@ -612,6 +612,7 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
                     cJSON *bj = cJSON_Parse(buf);
                     free(buf);
                     if (bj) {
+                        bt_status_normalize(bj);
                         send_cjson_resp(client_fd, 200, bj);
                         cJSON_Delete(bj);
                         close(client_fd);
@@ -629,6 +630,9 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
         cJSON_AddBoolToObject(st, "ok", 1);
         cJSON_AddBoolToObject(st, "running", bt_running);
         cJSON_AddStringToObject(st, "state", bt_running ? "running" : "stopped");
+        cJSON_AddBoolToObject(st, "connected", 0);
+        cJSON_AddBoolToObject(st, "pairing", 0);
+        cJSON_AddItemToObject(st, "hosts", cJSON_CreateArray());
         send_cjson_resp(client_fd, 200, st);
         cJSON_Delete(st);
         close(client_fd);
