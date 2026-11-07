@@ -5,6 +5,7 @@
 #include "elite_config.h"
 #include "elite_ui.h"
 #include "timezone_db.h"
+#include "elite_battery.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -316,6 +317,7 @@ static int s_batt_sample_idx = 0;
 static int s_batt_sample_num = 0;
 static uint64_t s_last_batt_sample_ms = 0;
 static uint8_t s_filtered_pct = 0xFF;
+static elite_batt_filter_t s_batt_filter = { 0xFF, 0 };
 
 time_t ui_wall_time(void) {
     return time(NULL);
@@ -390,33 +392,14 @@ void read_elite_battery(void) {
     uint16_t avg_mv = (uint16_t)(sum / BATT_SAMPLE_COUNT);
     g_battery_info.voltage_mv = avg_mv;
 
-    /* Linear over 3.40 to 4.10 V per cell: the same curve the doubled reading used (6.80 to
-     * 8.20 V), so the percentages do not move with this fix */
-    int mv = g_battery_info.voltage_mv;
-    int pct = 0;
-    if (mv >= 4100) pct = 100;
-    else if (mv <= 3400) pct = 0;
-    else pct = (int)((mv - 3400) * 100 / (4100 - 3400));
-    if (pct < 0) pct = 0;
-    if (pct > 100) pct = 100;
-
-    if (s_filtered_pct == 0xFF || chg_transition) {
-        s_filtered_pct = (uint8_t)pct;
-    } else {
-        if (g_battery_info.charging) {
-            if (pct > s_filtered_pct) {
-                s_filtered_pct = (uint8_t)pct;
-            } else if (s_filtered_pct - pct > 4) {
-                s_filtered_pct--;
-            }
-        } else {
-            if (pct < s_filtered_pct) {
-                s_filtered_pct = (uint8_t)pct;
-            } else if (pct - s_filtered_pct > 4) {
-                s_filtered_pct = (uint8_t)pct;
-            }
-        }
-    }
+    /* Rested = the screen has been off long enough for the cell to recover from the load
+     * (elite_battery.h); the percentage follows the rested voltage and only creeps down under
+     * load, so a wake no longer walks it down 2 points at a time */
+    bool rested = !g_screen_on && s_last_blank_time_ms > 0 &&
+                  now_ms - s_last_blank_time_ms >= ELITE_BATT_REST_MS;
+    if (s_filtered_pct == 0xFF) elite_battery_filter_init(&s_batt_filter);
+    s_filtered_pct = elite_battery_filter_step(&s_batt_filter, g_battery_info.voltage_mv, is_charging,
+                                               chg_transition, rested, now_ms);
     g_battery_info.percent = s_filtered_pct;
 }
 

@@ -466,7 +466,9 @@ int main(int argc, char **argv) {
             bool pct_changed = (last_reported_percent == 0xFF || abs((int)g_battery_info.percent - (int)last_reported_percent) >= 2);
             bool chg_changed = (g_battery_info.charging != last_charging_state);
             bool interval_elapsed = (last_battery_report_ms == 0 || now_ms - last_battery_report_ms >= 300000);
-            if (interval_elapsed || chg_changed || (g_screen_on && pct_changed)) {
+            /* a change seen with the screen on goes out at once, but at most once a minute */
+            bool change_due = g_screen_on && pct_changed && now_ms - last_battery_report_ms >= 60000;
+            if (interval_elapsed || chg_changed || change_due) {
                 last_charging_state = g_battery_info.charging;
                 last_reported_percent = g_battery_info.percent;
                 last_battery_report_ms = now_ms;
