@@ -30,6 +30,8 @@ int elite_battery_pct_of_mv(int mv) {
 void elite_battery_filter_init(elite_batt_filter_t *f) {
     f->pct = 0xFF;
     f->last_drop_ms = 0;
+    f->last_batt_mv = 0;
+    f->chg_offset_mv = ELITE_BATT_CHARGE_OFFSET_MV;
     f->chg_known = false;
     f->chg_stable = false;
     f->chg_pending = false;
@@ -61,7 +63,17 @@ bool elite_battery_charging(elite_batt_filter_t *f, bool raw, uint64_t now_ms, b
 
 uint8_t elite_battery_filter_step(elite_batt_filter_t *f, int avg_mv, bool charging,
                                   bool chg_transition, bool rested, uint64_t now_ms) {
-    int pct = elite_battery_pct_of_mv(charging ? avg_mv - ELITE_BATT_CHARGE_OFFSET_MV : avg_mv);
+    if (charging && chg_transition && f->last_batt_mv > 0) {
+        /* the first reading with the charger on, against the last one without it */
+        int off = avg_mv - f->last_batt_mv;
+        if (off < ELITE_BATT_CHARGE_OFFSET_MIN_MV) off = ELITE_BATT_CHARGE_OFFSET_MIN_MV;
+        if (off > ELITE_BATT_CHARGE_OFFSET_MAX_MV) off = ELITE_BATT_CHARGE_OFFSET_MAX_MV;
+        f->chg_offset_mv = off;
+    }
+    /* only a rested reading: the ones just before a charging start may already carry the
+     * charge current (the state is debounced) or the screen's load */
+    if (!charging && rested) f->last_batt_mv = avg_mv;
+    int pct = elite_battery_pct_of_mv(charging ? avg_mv - f->chg_offset_mv : avg_mv);
 
     if (f->pct == 0xFF) {
         f->pct = (uint8_t)pct;

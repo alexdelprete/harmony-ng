@@ -12,7 +12,14 @@
  * battery icon steps at 3.70 V and 3.85 V, 3.9 V and up "fully charged", with the flat middle
  * of a Li-ion cell between them. The PMIC reads the cell under the remote's own standby load,
  * so a fresh cell rests near 3.90 V; the old linear 3.40-4.10 V map showed that as 72 %.
- * While charging the reading is about 0.2 V high (testcharge.lua), so it is corrected first.
+ * While charging the reading is high by the charge current times the cell's resistance, so it is
+ * corrected first. How much depends on the charger: 0.17 V measured on the cradle (3.86 V
+ * rested, 4.03 V charging), 0.10 V on USB power (3.644 V, 3.740 V); the stock factory test
+ * (testcharge.lua) allows 0.2 V. A fixed 0.2 V made a nearly full remote on USB read 42 % after
+ * a restart, and the value stayed low because it only rises while charging. So the offset is
+ * measured when charging starts: the first charging reading minus the last rested reading on battery,
+ * kept within ELITE_BATT_CHARGE_OFFSET_MIN_MV..MAX_MV. A remote that starts while charging has
+ * no reading on battery and uses ELITE_BATT_CHARGE_OFFSET_MV.
  *
  * The cell sags under load: about 3.90 V at rest, 3.75 to 3.81 V a few seconds after the
  * screen turns on. Following every reading made the percentage walk down 2 points every couple
@@ -35,11 +42,15 @@
 #define ELITE_BATT_REST_MS 30000ULL         /* screen off this long = a rested reading */
 #define ELITE_BATT_DROP_STEP_MS 120000ULL   /* at most one point down per 2 minutes under load */
 #define ELITE_BATT_CHG_DEBOUNCE_MS 5000ULL  /* a charging change must hold this long */
-#define ELITE_BATT_CHARGE_OFFSET_MV 200     /* the reading is this much high while charging */
+#define ELITE_BATT_CHARGE_OFFSET_MV 100     /* charging offset when none was measured (USB value) */
+#define ELITE_BATT_CHARGE_OFFSET_MIN_MV 50  /* a measured offset is kept within these */
+#define ELITE_BATT_CHARGE_OFFSET_MAX_MV 250
 
 typedef struct {
     uint8_t pct;            /* 0xFF = no reading yet */
     uint64_t last_drop_ms;
+    int last_batt_mv;       /* the last rested reading on battery, 0 = none yet */
+    int chg_offset_mv;      /* how much a charging reading is high, measured at the last start */
     /* charging debounce */
     bool chg_known;
     bool chg_stable;        /* the debounced state */
