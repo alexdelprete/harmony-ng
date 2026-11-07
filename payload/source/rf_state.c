@@ -209,6 +209,19 @@ int rf_slot_apply_unit_id(uint8_t slot, const uint8_t *payload) {
     return changed;
 }
 
+/* write() until everything is out (a socket may take a large buffer in pieces) */
+static int write_all(int fd, const void *data, size_t len) {
+    const char *p = (const char *)data;
+    while (len > 0) {
+        ssize_t w = write(fd, p, len);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) return -1;
+        p += w;
+        len -= (size_t)w;
+    }
+    return 0;
+}
+
 int http_request_local(int port, const char *method, const char *endpoint, const char *json_body,
                        char *resp, size_t resp_len, int timeout_ms) {
     if (resp && resp_len) resp[0] = '\0';
@@ -250,16 +263,24 @@ int http_request_local(int port, const char *method, const char *endpoint, const
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
     setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
-    char req[1024];
+    /* Headers and body are written separately: the body (the RF status object is 1 to 3 KB)
+     * used to go through a 1 KB buffer, which truncated it while write() was given the
+     * untruncated length, so the daemon got a cut body plus stack bytes and answered 400 */
+    char hdr[256];
     size_t blen = json_body ? strlen(json_body) : 0;
-    int req_len = snprintf(req, sizeof(req),
+    int hdr_len = snprintf(hdr, sizeof(hdr),
         "%s %s HTTP/1.1\r\n"
         "Host: 127.0.0.1:%d\r\n"
         "Content-Type: application/json\r\n"
         "Content-Length: %zu\r\n"
-        "Connection: close\r\n\r\n%s",
-        method, endpoint, port, blen, json_body ? json_body : "");
-    write(sock, req, req_len);
+        "Connection: close\r\n\r\n",
+        method, endpoint, port, blen);
+    if (hdr_len <= 0 || (size_t)hdr_len >= sizeof(hdr) ||
+        write_all(sock, hdr, (size_t)hdr_len) != 0 ||
+        (blen && write_all(sock, json_body, blen) != 0)) {
+        close(sock);
+        return -1;
+    }
     shutdown(sock, SHUT_WR);
 
     /* Keep the headers and as much of the body as fits; drain the rest */
@@ -280,8 +301,8 @@ int http_request_local(int port, const char *method, const char *endpoint, const
     return status;
 }
 
-void http_post_local(int port, const char *endpoint, const char *json_body) {
-    http_request_local(port, "POST", endpoint, json_body, NULL, 0, 400);
+int http_post_local(int port, const char *endpoint, const char *json_body) {
+    return http_request_local(port, "POST", endpoint, json_body, NULL, 0, 400);
 }
 
 int rf_state_version_json(int slot, char *buf, size_t len) {
