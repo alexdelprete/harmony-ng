@@ -16,6 +16,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hub_harness import HubHarness, WsClient  # noqa: E402
+import bt_status_seed  # noqa: E402
 from mock_mqtt import MockBroker, MockClient  # noqa: E402
 
 PORT = 8989
@@ -167,12 +168,12 @@ def main():
             hub.http_post("/api/rf/status-changed", rf)
             m = sub.wait_for(BASE + "/rf", 5)
             check(m is not None and jload(m[1]).get("type") == "rf_status" and jload(m[1])["slots"][0]["battery"]["percent"] == 50, "rf published and retained", str(m))
-            bt = {"ok": True, "running": True, "connected": False, "hosts": []}
-            with open(BT_STATUS_FILE + ".tmp", "w") as f:
-                json.dump(bt, f)
-            os.replace(BT_STATUS_FILE + ".tmp", BT_STATUS_FILE)
+            bt_status_seed.write_status(BT_STATUS_FILE, host_connected=False)  # the real writer's format
             m = sub.wait_for(BASE + "/bt", 5)
-            check(m is not None and jload(m[1]).get("type") == "bt_status", "bt published", str(m))
+            btp = jload(m[1]) if m else {}
+            check(m is not None and btp.get("type") == "bt_status" and btp.get("running") is True
+                  and btp.get("connected") is False and len(btp.get("hosts", [])) == 2,
+                  "bt published (hub_btstack's fields plus running and connected)", str(m))
             # button event -> remote/<slot>/button, QoS 1, not retained
             sub.drain()
             hub.http_post("/api/button-press", {"button": "VolumeUp", "action": "press", "source": "elite_rf", "slot": 1, "deviceId": "1", "command": "VolumeUp"})

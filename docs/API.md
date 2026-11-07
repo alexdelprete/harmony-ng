@@ -748,7 +748,9 @@ Returns `hub_btstack`'s status (`/tmp/hub_btstack_status.json`) with four fields
 `ok`, `running` (the `hub_btstack` process is alive), `connected` (any host connected) and
 `pairing` (pairing mode on). `hosts` lists every paired host with its address (`addr`), name,
 `connected`, `paired` and `cid`; `host` is the host keys go to. `target` and `remote` are the
-Bluetooth LE remote, not a host; `state` is that link's state.
+Bluetooth LE remote, not a host; `state` is that link's state. `hub_btstack` writes the file in
+`update_status()` through `bt_status_json.c`; the tests and fixtures use the same writer
+(`tests/bt_status_sample.c`).
 - **Response `200 OK`**:
   ```json
   {

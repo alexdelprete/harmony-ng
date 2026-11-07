@@ -27,6 +27,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from hub_harness import HubHarness, SAMPLE_CONFIG  # noqa: E402
 from mock_mqtt import MockBroker, MockClient  # noqa: E402
+import bt_status_seed  # noqa: E402
 
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = os.path.join(TESTS_DIR, "fixtures", "ha")
@@ -34,16 +35,6 @@ PORT = 8991
 UNIT_ID = "20140101120000-000001"
 BT_STATUS_FILE = "/tmp/hub_btstack_status.json"
 
-# hub_btstack's own format (/tmp/hub_btstack_status.json); hub_daemon adds ok, running, connected
-# and pairing. "pid" is filled in at run time with a live process.
-BT_STATUS = {
-    "backend": "btstack", "pid": 0, "state": "connecting", "target": "11:22:33:44:55:66",
-    "last_button": "", "last_seen": 0,
-    "remote": {"connected": True, "addr": "11:22:33:44:55:66"},
-    "host": {"connected": True, "addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "pairing": False},
-    "hosts": [{"addr": "AA:BB:CC:DD:EE:01", "name": "Television", "connected": False, "paired": True, "cid": 2},
-              {"addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "connected": True, "paired": True, "cid": 6}],
-}
 
 RF_STATUS = {
     "running": True, "ok": True, "fw_version": "v72.00", "paired": True, "rf_address": "A1B2C3D4",
@@ -106,9 +97,9 @@ def main():
         mfg_path = f.name
     tmp = BT_STATUS_FILE + ".tmp"
     try:
-        with open(tmp, "w") as f:
-            json.dump(dict(BT_STATUS, pid=os.getpid()), f)
-        os.replace(tmp, BT_STATUS_FILE)
+        # hub_btstack's file from its real writer (tests/bt_status_sample.c); pid 1 is always
+        # alive, so "running" is true and the fixtures do not change with the recorder's pid
+        bt_status_seed.write_status(BT_STATUS_FILE, pid=1)
         print("[-] Recording milestone 1 fixtures into %s" % args.out)
         with HubHarness(port=PORT, args=["--mfg-file", mfg_path]) as hub:
             time.sleep(1.5)  # watcher baseline (bt_status emitted from the file)

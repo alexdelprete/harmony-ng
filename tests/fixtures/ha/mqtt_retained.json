@@ -14,7 +14,7 @@
     "seq": 2,
     "ts": 1793959910,
     "backend": "btstack",
-    "pid": 1234,
+    "pid": 1,
     "state": "connecting",
     "target": "11:22:33:44:55:66",
     "last_button": "",
