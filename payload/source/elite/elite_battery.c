@@ -27,6 +27,28 @@ int elite_battery_pct_of_mv(int mv) {
     return 100;
 }
 
+elite_batt_report_t g_batt_report = { false, 0, -1, -1, false };
+
+void elite_battery_request_report(elite_batt_report_t *r) {
+    r->requested = true;
+}
+
+bool elite_battery_report_due(elite_batt_report_t *r, uint64_t now_ms, int pct, bool charging, bool screen_on) {
+    bool since_ok = r->sent;
+    bool interval = !since_ok || now_ms - r->last_ms >= ELITE_BATT_REPORT_INTERVAL_MS;
+    bool chg_changed = since_ok && (int)charging != r->last_chg;
+    int d = pct - r->last_pct;
+    if (d < 0) d = -d;
+    bool change_due = since_ok && screen_on && d >= 2 && now_ms - r->last_ms >= ELITE_BATT_REPORT_CHANGE_MS;
+    if (!(interval || chg_changed || change_due || r->requested)) return false;
+    r->sent = true;
+    r->requested = false;
+    r->last_ms = now_ms;
+    r->last_pct = pct;
+    r->last_chg = (int)charging;
+    return true;
+}
+
 void elite_battery_filter_init(elite_batt_filter_t *f) {
     f->pct = 0xFF;
     f->last_drop_ms = 0;

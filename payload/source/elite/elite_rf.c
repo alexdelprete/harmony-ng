@@ -2,6 +2,7 @@
 #include "elite_ui.h"
 #include "elite_power.h"
 #include "elite_config.h"
+#include "elite_battery.h"
 
 int rf_send_frame(rf_frame_t *frame) {
     if (g_rf_fd < 0 || !frame) return -1;
@@ -432,4 +433,6 @@ void send_version_report_rf(void) {
     printf("[*] Sent 24h version report over RF: v%u.%u.%u (cfg=%u)\n", maj, min, pat, g_config_version);
     /* A Hub without RF_MSG_UNIT_ID drops the frame like any unknown type: no cost */
     send_unit_id_rf();
+    /* and the battery right after: a Hub that restarted asks for the version first */
+    elite_battery_request_report(&g_batt_report);
 }

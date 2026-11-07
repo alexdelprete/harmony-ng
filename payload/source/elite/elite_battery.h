@@ -62,4 +62,27 @@ bool elite_battery_charging(elite_batt_filter_t *f, bool raw, uint64_t now_ms, b
 uint8_t elite_battery_filter_step(elite_batt_filter_t *f, int avg_mv, bool charging,
                                   bool chg_transition, bool rested, uint64_t now_ms);
 
+/* When the remote sends RF_MSG_BATTERY_STATUS: every 5 minutes, at once on a charging change,
+ * with the screen on for a change of 2 points or more (at most once a minute), and at once when
+ * requested: after the link came up and with every version report (a Hub that restarted then
+ * gets the battery as soon as the remote is linked, not up to 5 minutes later). */
+#define ELITE_BATT_REPORT_INTERVAL_MS 300000ULL
+#define ELITE_BATT_REPORT_CHANGE_MS 60000ULL
+
+typedef struct {
+    bool sent;              /* a report went out since start */
+    uint64_t last_ms;
+    int last_pct;
+    int last_chg;
+    bool requested;
+} elite_batt_report_t;
+
+/* Ask for a report at the next chance (link up, version report) */
+void elite_battery_request_report(elite_batt_report_t *r);
+/* true when a report is due now; the caller sends it, this records it */
+bool elite_battery_report_due(elite_batt_report_t *r, uint64_t now_ms, int pct, bool charging, bool screen_on);
+
+/* The remote's reporter (elite_main.c checks it, elite_rf.c requests reports) */
+extern elite_batt_report_t g_batt_report;
+
 #endif

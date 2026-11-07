@@ -150,6 +150,20 @@ int main(void) {
     p = elite_battery_filter_step(&f, 3850, false, false, true, t + 60000);
     CHECK(p == elite_battery_pct_of_mv(3850), "the next rested reading sets it");
 
+    /* 7. the reporter: every 5 minutes, at once on request (link up, version report), on a
+     *    charging change, and with the screen on for 2 points (at most once a minute) */
+    elite_batt_report_t r = { false, 0, -1, -1, false };
+    CHECK(elite_battery_report_due(&r, 1000, 80, false, false), "the first report goes out at once");
+    CHECK(!elite_battery_report_due(&r, 61000, 80, false, false), "nothing new within 5 minutes");
+    elite_battery_request_report(&r);
+    CHECK(elite_battery_report_due(&r, 62000, 80, false, false), "a requested report goes out at once (a Hub that restarted)");
+    CHECK(!elite_battery_report_due(&r, 63000, 80, false, false), "a request is served once");
+    CHECK(elite_battery_report_due(&r, 64000, 80, true, false), "a charging change goes out at once");
+    CHECK(!elite_battery_report_due(&r, 65000, 77, true, true), "screen on, 3 points, but under a minute since the last");
+    CHECK(elite_battery_report_due(&r, 125000, 77, true, true), "screen on, 3 points, a minute later");
+    CHECK(!elite_battery_report_due(&r, 400000, 77, true, false), "screen off and no change: the interval");
+    CHECK(elite_battery_report_due(&r, 425000, 77, true, false), "the 5-minute interval");
+
     if (g_failures) { printf("[-] %d battery filter checks failed\n", g_failures); return 1; }
     printf("[+] All battery filter checks passed\n");
     return 0;

@@ -11,6 +11,7 @@
 #include "elite_present.h"
 #include "elite_ui_scroll.h"
 #include "harmony_version.h"
+#include "elite_battery.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -465,21 +466,15 @@ int main(int argc, char **argv) {
             }
         }
 
-        static uint64_t last_battery_report_ms = 0;
-        static uint8_t last_charging_state = 0xFF;
-        static uint8_t last_reported_percent = 0xFF;
+        /* A link that came (back) up: report the battery at once, a Hub that restarted has none */
+        static bool s_link_was_up = false;
+        if (g_rf_link_connected && !s_link_was_up) elite_battery_request_report(&g_batt_report);
+        s_link_was_up = g_rf_link_connected;
         /* The battery read takes about 4 ms, so it waits until a drag or settle ends */
         if (g_rf_fd >= 0 && g_rf_link_connected && !g_is_ota_updating && !ui_scroll_active()) {
             read_elite_battery();
-            bool pct_changed = (last_reported_percent == 0xFF || abs((int)g_battery_info.percent - (int)last_reported_percent) >= 2);
-            bool chg_changed = (g_battery_info.charging != last_charging_state);
-            bool interval_elapsed = (last_battery_report_ms == 0 || now_ms - last_battery_report_ms >= 300000);
-            /* a change seen with the screen on goes out at once, but at most once a minute */
-            bool change_due = g_screen_on && pct_changed && now_ms - last_battery_report_ms >= 60000;
-            if (interval_elapsed || chg_changed || change_due) {
-                last_charging_state = g_battery_info.charging;
-                last_reported_percent = g_battery_info.percent;
-                last_battery_report_ms = now_ms;
+            if (elite_battery_report_due(&g_batt_report, now_ms, g_battery_info.percent,
+                                         g_battery_info.charging != 0, g_screen_on)) {
                 send_battery_status_rf();
             }
         }
