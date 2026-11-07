@@ -70,7 +70,10 @@ typedef struct {
     uint8_t percent;
     uint8_t charging;
     uint16_t voltage_mv;
-    uint64_t last_update_ms;
+    uint64_t last_update_ms;   /* CLOCK_MONOTONIC ms of the report (system wide, so it survives a
+                                * hub_rf restart within a boot), 0 = no report */
+    int64_t reported_at;       /* Unix time of the report, 0 = not known yet (clock not set) */
+    uint8_t restored;          /* read back from the RAM cache, no report since this start */
 } remote_battery_t;
 
 typedef struct {
@@ -129,6 +132,18 @@ extern "C" {
 #endif
 
 uint64_t get_monotonic_ms(void);
+
+/* The last battery report per slot, kept in RAM across hub_rf and hub_daemon restarts
+ * (<dir>/hub_rf_battery_slot<N>.json, dir /tmp; never on flash): a restart shows the last value
+ * with "restored": true until the remote reports again, instead of a 0 % placeholder. A reboot
+ * empties /tmp: values are unknown until the remote's first report. */
+extern const char *g_rf_battery_cache_dir;
+/* Wall clock used for reported_at (time() in the firmware; the tests replace it) */
+extern time_t (*g_rf_time_fn)(time_t *);
+void rf_battery_note_report(uint8_t slot, uint8_t percent, uint8_t charging, uint16_t voltage_mv);
+void rf_battery_restore(void);
+/* Gives a report made before the clock was set its reported_at; returns 1 when it changed one */
+int rf_battery_fix_times(void);
 void mark_remote_slot_active(uint8_t slot);
 bool is_ota_busy(void);
 /* POST json_body to 127.0.0.1:port; returns the HTTP status, -1 when nothing came back */

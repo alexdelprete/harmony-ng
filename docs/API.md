@@ -881,6 +881,16 @@ Returns CC2544 radio state, paired remote slots, model identification, screen ca
   "Harmony Touch", "Harmony Companion", "Harmony Smart Control"), `null` while unknown.
   `slots[].name` is `"<model_name> (Slot N)"`; while the model is unknown, the CC2544's slot name
   or "Harmony Remote".
+- `slots[].battery`: the remote's last battery report: `percent`, `charging`, `voltage_mv` (one
+  cell), `reported_at` (Unix time of that report; `null` before the first one, and while the Hub's
+  clock was not set yet, until it is) and `restored` (`true` when the value was read back after a
+  `hub_rf` or `hub_daemon` restart and the remote has not reported since). The last report per slot
+  is kept in RAM (`/tmp/hub_rf_battery_slot<N>.json`, never on flash), so a daemon restart shows it
+  at once; after a reboot the block stays at its placeholder (`percent` 0, `voltage_mv` 0,
+  `reported_at` `null`) until the remote reports, which it does right after its link to the Hub
+  comes up, every 5 minutes while awake, and on a charging change. The age of a value is now minus
+  `reported_at`. A new report is a change (one `rf_status` event per report); a voltage change
+  alone is not.
 - `slots[].skin`: the skin id the remote reported (an integer, `null` when not reported).
 - `slots[].equad_id`: the EquadID the Hub's CC2544 reports for the slot (an integer: 16417 =
   `0x4021` touchscreen remotes, 16414 = `0x401E` Smart Control, 16422 / 16423 = `0x4026` /

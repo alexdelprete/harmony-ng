@@ -1937,6 +1937,7 @@ paths:
       summary: CC2544 RF subsystem status
       description: |
         Proxied to hub_rf (port 8092). Returns remote RF status, paired slots, battery telemetry, and RF link statistics (frames_rx, acked_sent, acked_ok, retries, naks, last_seen_s).
+        battery.reported_at is the Unix time of the last report (null before the first one or while the clock was not set), battery.restored is true for a value read back from RAM after a hub_rf restart, until the remote reports again. docs/API.md 7.1.
         Per slot, the product: model (ultimate, ultimate_one, ultimate_home, elite, 950, touch,
         companion, smart_control, unknown), model_name (the stock product name, null
         while unknown), skin (the skin id a touchscreen remote reports, null when not reported) and
@@ -2014,6 +2015,8 @@ paths:
                       percent: 78
                       charging: false
                       voltage_mv: 3840
+                      reported_at: 1794000000
+                      restored: false
                     link:
                       frames_rx: 210
                       acked_sent: 85

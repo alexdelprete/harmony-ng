@@ -29,9 +29,15 @@ int g_log_level = LOG_LEVEL_INFO;
 int g_debug_logging = 0;
 
 remote_battery_t g_remote_batteries[MAX_PAIRED_REMOTES] = {
-    { .percent = 0, .charging = 0, .voltage_mv = 0, .last_update_ms = 0 },
-    { .percent = 0, .charging = 0, .voltage_mv = 0, .last_update_ms = 0 }
+    { .percent = 0, .charging = 0, .voltage_mv = 0, .last_update_ms = 0, .reported_at = 0, .restored = 0 },
+    { .percent = 0, .charging = 0, .voltage_mv = 0, .last_update_ms = 0, .reported_at = 0, .restored = 0 }
 };
+
+const char *g_rf_battery_cache_dir = "/tmp";
+time_t (*g_rf_time_fn)(time_t *) = time;
+
+/* Before this the clock has not been set: 2024-01-01 */
+#define RF_CLOCK_VALID_EPOCH 1704067200LL
 
 remote_version_t g_remote_versions[MAX_PAIRED_REMOTES] = {
     { .sw_version = "unknown", .config_version = 0, .last_report_ms = 0 },
@@ -52,6 +58,93 @@ uint64_t get_monotonic_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+}
+
+static void battery_cache_path(int slot, char *out, size_t len) {
+    snprintf(out, len, "%s/hub_rf_battery_slot%d.json", g_rf_battery_cache_dir, slot);
+}
+
+static int64_t wall_now(void) {
+    int64_t t = (int64_t)g_rf_time_fn(NULL);
+    return t >= RF_CLOCK_VALID_EPOCH ? t : 0;
+}
+
+static void battery_cache_write(int slot) {
+    const remote_battery_t *b = &g_remote_batteries[slot - 1];
+    char path[160], tmp[176];
+    battery_cache_path(slot, path, sizeof(path));
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    FILE *f = fopen(tmp, "w");
+    if (!f) return;
+    fprintf(f, "{\"percent\":%u,\"charging\":%s,\"voltage_mv\":%u,\"reported_at\":%lld,\"mono_ms\":%llu}\n",
+            (unsigned)b->percent, b->charging ? "true" : "false", (unsigned)b->voltage_mv,
+            (long long)b->reported_at, (unsigned long long)b->last_update_ms);
+    fclose(f);
+    rename(tmp, path);
+}
+
+void rf_battery_note_report(uint8_t slot, uint8_t percent, uint8_t charging, uint16_t voltage_mv) {
+    if (slot < 1 || slot > MAX_PAIRED_REMOTES) return;
+    remote_battery_t *b = &g_remote_batteries[slot - 1];
+    b->percent = percent;
+    b->charging = charging;
+    b->voltage_mv = voltage_mv;
+    b->last_update_ms = get_monotonic_ms();
+    b->reported_at = wall_now();
+    b->restored = 0;
+    battery_cache_write(slot);
+}
+
+void rf_battery_restore(void) {
+    uint64_t now = get_monotonic_ms();
+    for (int slot = 1; slot <= MAX_PAIRED_REMOTES; slot++) {
+        char path[160];
+        battery_cache_path(slot, path, sizeof(path));
+        FILE *f = fopen(path, "r");
+        if (!f) continue;
+        char buf[256] = {0};
+        size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+        fclose(f);
+        buf[n] = 0;
+        cJSON *j = cJSON_Parse(buf);
+        if (!j) continue;
+        const cJSON *pc = cJSON_GetObjectItem(j, "percent");
+        const cJSON *ch = cJSON_GetObjectItem(j, "charging");
+        const cJSON *mv = cJSON_GetObjectItem(j, "voltage_mv");
+        const cJSON *ra = cJSON_GetObjectItem(j, "reported_at");
+        const cJSON *mo = cJSON_GetObjectItem(j, "mono_ms");
+        /* mono_ms from a later time than now: written in another boot (should not happen in /tmp) */
+        if (cJSON_IsNumber(pc) && cJSON_IsNumber(mv) && cJSON_IsNumber(mo) && mo->valuedouble > 0 &&
+            (uint64_t)mo->valuedouble <= now) {
+            remote_battery_t *b = &g_remote_batteries[slot - 1];
+            b->percent = (uint8_t)pc->valueint;
+            b->charging = cJSON_IsTrue(ch) ? 1 : 0;
+            b->voltage_mv = (uint16_t)mv->valueint;
+            b->last_update_ms = (uint64_t)mo->valuedouble;
+            b->reported_at = cJSON_IsNumber(ra) ? (int64_t)ra->valuedouble : 0;
+            b->restored = 1;
+            printf("[+] Battery of slot %d restored from %s: %u%% (%us old)\n", slot, path,
+                   (unsigned)b->percent, (unsigned)((now - b->last_update_ms) / 1000));
+        }
+        cJSON_Delete(j);
+    }
+    rf_battery_fix_times();
+}
+
+int rf_battery_fix_times(void) {
+    int64_t wall = wall_now();
+    if (!wall) return 0;
+    uint64_t now = get_monotonic_ms();
+    int changed = 0;
+    for (int slot = 1; slot <= MAX_PAIRED_REMOTES; slot++) {
+        remote_battery_t *b = &g_remote_batteries[slot - 1];
+        if (b->last_update_ms && !b->reported_at && b->last_update_ms <= now) {
+            b->reported_at = wall - (int64_t)((now - b->last_update_ms) / 1000);
+            battery_cache_write(slot);
+            changed = 1;
+        }
+    }
+    return changed;
 }
 
 void mark_remote_slot_active(uint8_t slot) {

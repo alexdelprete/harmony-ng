@@ -98,7 +98,9 @@
         "battery": {
           "percent": 87,
           "charging": false,
-          "voltage_mv": 7980
+          "voltage_mv": 3980,
+          "reported_at": 1794000000,
+          "restored": false
         },
         "link": {
           "frames_rx": 120,
@@ -127,7 +129,9 @@
         "battery": {
           "percent": 0,
           "charging": false,
-          "voltage_mv": 0
+          "voltage_mv": 0,
+          "reported_at": null,
+          "restored": false
         },
         "link": {
           "frames_rx": 0,

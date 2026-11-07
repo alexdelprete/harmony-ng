@@ -219,14 +219,12 @@ void handle_rf_frame(const rf_frame_t *f) {
             uint8_t slot = f->dev_slot & 0x0F;
             if (slot < 1 || slot > 2) slot = 1;
             int idx = slot - 1;
-            g_remote_batteries[idx].percent = f->payload[0];
-            g_remote_batteries[idx].charging = f->payload[1];
-            g_remote_batteries[idx].voltage_mv = (uint16_t)f->payload[2] | ((uint16_t)f->payload[3] << 8);
-            g_remote_batteries[idx].last_update_ms = get_monotonic_ms();
+            rf_battery_note_report(slot, f->payload[0], f->payload[1],
+                                   (uint16_t)f->payload[2] | ((uint16_t)f->payload[3] << 8));
             printf("[*] BATTERY_STATUS: Slot %d: %d%% (chg=%d, %umV)\n",
                    slot, g_remote_batteries[idx].percent, g_remote_batteries[idx].charging, g_remote_batteries[idx].voltage_mv);
-            /* Kept in memory only: the remote reports every few minutes and MQTT retains the
-             * last value; writing it to flash cost hundreds of writes a day */
+            /* Kept in memory and in /tmp only (rf_battery_note_report): the remote reports every
+             * few minutes; writing it to flash cost hundreds of writes a day */
             publish_remote_battery_mqtt(slot, g_remote_batteries[idx].percent, g_remote_batteries[idx].charging, g_remote_batteries[idx].voltage_mv);
             if (!is_ota_busy()) {
                 rf_frame_t ack;
@@ -426,6 +424,8 @@ int main(int argc, char **argv) {
         snprintf(bpath, sizeof(bpath), "/data/harmony/elite_slot%d_battery.json", slot);
         unlink(bpath);
     }
+    /* The last battery per slot from before a hub_rf restart (RAM only) */
+    rf_battery_restore();
 
     /* 1. Initialize CC2544 message engine */
     uint8_t pkt_init[7] = {0x10, 0xFF, 0x80, 0x00, 0x00, 0x01, 0x00};
@@ -506,6 +506,7 @@ int main(int argc, char **argv) {
     int push_failing = 0;
     while (g_running) {
         sleep(1);
+        rf_battery_fix_times(); /* a report from before the clock was set gets its reported_at */
         char key[3584];
         if (rf_build_status_json(key, sizeof(key), RF_STATUS_STABLE_ONLY) < 0) continue;
         if (last_key && strcmp(last_key, key) == 0) continue;

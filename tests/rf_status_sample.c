@@ -49,7 +49,9 @@ int main(int argc, char **argv) {
     snprintf(g_remote_versions[0].sw_version, sizeof(g_remote_versions[0].sw_version), "%s", version);
     g_remote_versions[0].config_version = 7;
     g_remote_batteries[0].percent = 87;
-    g_remote_batteries[0].voltage_mv = 7980;
+    g_remote_batteries[0].voltage_mv = 3980;
+    g_remote_batteries[0].last_update_ms = 1;
+    g_remote_batteries[0].reported_at = 1794000000; /* a fixed time: the fixtures do not change */
     g_remote_link[0].frames_rx = 120;
     g_remote_link[0].acked_sent = 12;
     g_remote_link[0].acked_ok = 12;
