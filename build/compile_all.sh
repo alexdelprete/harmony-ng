@@ -85,6 +85,7 @@ build_daemon() {
         payload/source/http_api_backup.c \
         payload/source/http_api_system.c \
         payload/source/config_store.c \
+        payload/source/bt_migrate.c \
         payload/source/config_sanitize.c \
         payload/source/orchestrator.c \
         payload/source/orchestrator_queue.c \
@@ -99,6 +100,9 @@ build_daemon() {
         payload/source/hw_action.c \
         payload/source/ws_server.c \
         payload/source/state_watch.c \
+        payload/source/hub_events.c \
+        payload/source/hub_info.c \
+        payload/source/mfg_id.c \
         payload/source/mqtt_client.c \
         payload/source/sha256.c \
         payload/source/timezone_db.c \
@@ -160,7 +164,7 @@ build_elite() {
 
     mkdir -p "$REPO_ROOT/elite/bin" "$REPO_ROOT/build/output/elite"
     echo "[-] Building elite_ui (ARM)..."
-    "$ARM_CC" -static -Os -s -Wall -Ipayload/source -Ipayload/source/elite payload/source/elite/*.c payload/source/elite_stock_icons.c payload/source/timezone_db.c payload/source/cJSON.c payload/source/sha256.c payload/source/uclibc_static_locks.c -o "$REPO_ROOT/elite/bin/elite_ui" -lpthread -lm
+    "$ARM_CC" -static -Os -s -Wall -Ipayload/source -Ipayload/source/elite payload/source/elite/*.c payload/source/elite_stock_icons.c payload/source/mfg_id.c payload/source/timezone_db.c payload/source/cJSON.c payload/source/sha256.c payload/source/uclibc_static_locks.c -o "$REPO_ROOT/elite/bin/elite_ui" -lpthread -lm
     echo "[-] Building elite_sync (ARM)..."
     "$ARM_CC" -static -Os -s -Wall payload/source/hub_sync.c -o "$REPO_ROOT/elite/bin/elite_sync"
     echo "[-] Packaging elite_ui.ota.gz (binary + scripts)..."

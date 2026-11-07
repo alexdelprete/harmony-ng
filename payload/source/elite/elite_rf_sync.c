@@ -626,6 +626,17 @@ void handle_hub_frame_remote(const rf_frame_t *f) {
             break;
         }
 
+        case RF_MSG_WAKE: {
+            rf_frame_t ack;
+            rf_build_ack(&ack, g_remote_slot, f->seq, 0x00);
+            rf_send_frame(&ack);
+            if (!g_screen_on) printf("[*] Wake request from the Hub: turning the screen on\n");
+            /* the power manager wakes the screen, as for a cradle change; with the screen already
+             * on it restarts the idle timeout, so the screen does not go off right after */
+            g_wake_requested = 1;
+            break;
+        }
+
         default:
             if (g_log_level >= LOG_LEVEL_DEBUG) {
                 printf("[*] Remote: unknown Hub frame type 0x%02X\n", f->msg_type);
@@ -728,6 +739,13 @@ void *rf_rx_worker(void *arg) {
             continue;
         }
 
+        /* Windowed OTA data frames have no message type (header 0x60, see rf_proto.h) */
+        if (g_is_ota_updating && n >= 32 && pkt[0] == 0x20 && pkt[2] == 0x12 && (pkt[4] & 0xE0) == RF_OTA_HDR_DATA) {
+            g_last_hub_frame_ms = get_monotonic_ms();
+            handle_ota_data_frame(pkt);
+            continue;
+        }
+
         if (rf_is_valid_frame(pkt, (size_t)n)) {
             g_last_hub_frame_ms = get_monotonic_ms();
             if (!g_rf_link_connected) {
@@ -785,8 +803,11 @@ void *rf_rx_worker(void *arg) {
                     memcpy(f.payload, &pkt[4], sizeof(f.payload));
                 }
             }
-            printf("[*] RF RX -> Hub frame type=0x%02X seq=%d\n", f.msg_type, f.seq);
-            fflush(stdout);
+            /* Not for every chunk: a windowed OTA brings about 250 a second */
+            if (!(g_is_ota_updating && f.msg_type == RF_MSG_OTA_CHUNK)) {
+                printf("[*] RF RX -> Hub frame type=0x%02X seq=%d\n", f.msg_type, f.seq);
+                fflush(stdout);
+            }
             handle_hub_frame_remote(&f);
         } else {
             /* Not a standard frame — check if it's a 0x42 container with embedded data */

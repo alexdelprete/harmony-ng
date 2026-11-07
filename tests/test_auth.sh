@@ -26,6 +26,7 @@ gcc -Wall -O2 -g -DTEST_HARNESS=1 \
     "$REPO_ROOT/payload/source/http_api_backup.c" \
     "$REPO_ROOT/payload/source/http_api_system.c" \
     "$REPO_ROOT/payload/source/config_store.c" \
+    "$REPO_ROOT/payload/source/bt_migrate.c" \
     "$REPO_ROOT/payload/source/config_sanitize.c" \
     "$REPO_ROOT/payload/source/orchestrator.c" \
     "$REPO_ROOT/payload/source/orchestrator_queue.c" \
@@ -40,6 +41,9 @@ gcc -Wall -O2 -g -DTEST_HARNESS=1 \
     "$REPO_ROOT/payload/source/hw_action.c" \
     "$REPO_ROOT/payload/source/ws_server.c" \
     "$REPO_ROOT/payload/source/state_watch.c" \
+    "$REPO_ROOT/payload/source/hub_events.c" \
+    "$REPO_ROOT/payload/source/hub_info.c" \
+    "$REPO_ROOT/payload/source/mfg_id.c" \
     "$REPO_ROOT/payload/source/mqtt_client.c" \
     "$REPO_ROOT/payload/source/sha256.c" \
     "$REPO_ROOT/payload/source/timezone_db.c" \

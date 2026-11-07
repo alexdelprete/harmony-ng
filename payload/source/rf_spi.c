@@ -77,6 +77,30 @@ int rf_send_frame(rf_frame_t *frame) {
     return rf_write_cmd(out, sizeof(out));
 }
 
+int rf_send_ota_data(uint8_t slot, uint32_t idx, bool ack_req, const uint8_t *data, size_t len) {
+    uint8_t out[30];
+    memset(out, 0, sizeof(out));
+    out[0] = 0x12;
+    out[1] = slot ? (slot & 0x0F) : (g_remote_slot ? (g_remote_slot & 0x0F) : 0x01);
+    out[2] = (uint8_t)(RF_OTA_HDR_DATA | (idx & 0x0F) | (ack_req ? RF_OTA_HDR_ACK : 0));
+    out[3] = (uint8_t)((idx >> 4) & 0xFF);
+    if (len > RF_OTA_DATA_BYTES) len = RF_OTA_DATA_BYTES;
+    if (data && len) memcpy(&out[4], data, len);
+    return rf_write_cmd(out, sizeof(out));
+}
+
+static uint8_t s_power_mode = RF_PM_ACTIVE;
+int rf_set_power_mode(uint8_t mode) {
+    if (mode == s_power_mode) return 0;
+    uint8_t cmd[7] = {0x20, mode, 0x00, 0x00, 0x00, 0x00, 0x00};
+    int r = rf_write_cmd(cmd, sizeof(cmd));
+    if (r == 0) {
+        s_power_mode = mode;
+        printf("[*] CC2544 power mode 0x%02X\n", mode);
+    }
+    return r;
+}
+
 /* Index into g_remote_link for a slot byte, or -1 */
 static int link_idx(uint8_t slot) {
     slot &= 0x0F;
@@ -115,6 +139,18 @@ int rf_send_frame_acked(rf_frame_t *frame, int timeout_ms) {
     pthread_mutex_unlock(&g_ack_mutex);
     if (ok && li >= 0) g_remote_link[li].acked_ok++;
     return ok ? 0 : -1;
+}
+
+/* Ask a remote to turn its screen on; returns the attempt that was ACKed, or 0 if none was */
+int rf_wake_remote(uint8_t slot, int attempts) {
+    for (int i = 1; i <= attempts && g_running; i++) {
+        rf_frame_t f;
+        uint8_t pl[1] = {0};
+        rf_build_frame(&f, slot, RF_MSG_WAKE, ++g_tx_seq, RF_FLAG_ACK_REQ, pl, 1);
+        if (rf_send_frame_acked(&f, 600) == 0) return i;
+        usleep(100000);
+    }
+    return 0;
 }
 
 void rf_signal_ack(uint8_t seq, uint8_t status, const uint8_t *payload) {

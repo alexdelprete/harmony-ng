@@ -64,8 +64,48 @@ int hw_ir_send_pronto(const char *pronto_hex, uint8_t ports, uint8_t repeats) {
     return ret;
 }
 
+#ifdef TEST_HARNESS
+/* Last hw_ir_send_raw() call, for tests/test_ir_raw.py (GET /api/test/ir-raw-last) */
+static struct {
+    uint32_t freq_hz;
+    size_t count;
+    uint8_t ports;
+    uint8_t repeats;
+    uint64_t sum_us;
+    uint32_t first[8];
+    int calls;
+} s_test_last_raw;
+
+cJSON *hw_test_last_raw_json(void) {
+    cJSON *o = cJSON_CreateObject();
+    cJSON_AddNumberToObject(o, "calls", s_test_last_raw.calls);
+    cJSON_AddNumberToObject(o, "frequency", s_test_last_raw.freq_hz);
+    cJSON_AddNumberToObject(o, "count", (double)s_test_last_raw.count);
+    cJSON_AddNumberToObject(o, "port", s_test_last_raw.ports);
+    cJSON_AddNumberToObject(o, "repeats", s_test_last_raw.repeats);
+    cJSON_AddNumberToObject(o, "sum_us", (double)s_test_last_raw.sum_us);
+    cJSON *first = cJSON_AddArrayToObject(o, "first");
+    for (size_t i = 0; i < 8 && i < s_test_last_raw.count; i++) {
+        cJSON_AddItemToArray(first, cJSON_CreateNumber(s_test_last_raw.first[i]));
+    }
+    return o;
+}
+#endif
+
 int hw_ir_send_raw(uint32_t freq_hz, const uint32_t *timings_us, size_t count, uint8_t ports, uint8_t repeats) {
     if (!timings_us || count == 0) return -1;
+#ifdef TEST_HARNESS
+    s_test_last_raw.calls++;
+    s_test_last_raw.freq_hz = freq_hz;
+    s_test_last_raw.count = count;
+    s_test_last_raw.ports = ports;
+    s_test_last_raw.repeats = repeats;
+    s_test_last_raw.sum_us = 0;
+    for (size_t i = 0; i < count; i++) {
+        s_test_last_raw.sum_us += timings_us[i];
+        if (i < 8) s_test_last_raw.first[i] = timings_us[i];
+    }
+#endif
     if (ports == 0) return 0; /* 0 = No blasters / IR disabled */
 
     uint8_t *bin = NULL;
@@ -265,47 +305,8 @@ static void check_and_trigger_bt_reconnect_for_command(cJSON *devs, const char *
             strncpy(target_bdaddr, j_bta->valuestring, sizeof(target_bdaddr) - 1);
         }
 
-        if (!target_bdaddr[0]) {
-            FILE *bf = fopen("/data/harmony/bt-devices.json", "r");
-            if (bf) {
-                fseek(bf, 0, SEEK_END);
-                long sz = ftell(bf);
-                fseek(bf, 0, SEEK_SET);
-                if (sz > 0 && sz < 65536) {
-                    char *buf = malloc(sz + 1);
-                    if (buf) {
-                        size_t r = fread(buf, 1, sz, bf);
-                        buf[r] = 0;
-                        cJSON *bt_root = cJSON_Parse(buf);
-                        if (bt_root) {
-                            cJSON *bdevs = cJSON_GetObjectItemCaseSensitive(bt_root, "devices");
-                            if (bdevs && cJSON_IsArray(bdevs)) {
-                                cJSON *bitem = NULL;
-                                cJSON_ArrayForEach(bitem, bdevs) {
-                                    cJSON *b_id = cJSON_GetObjectItemCaseSensitive(bitem, "id");
-                                    char b_id_str[64] = {0};
-                                    if (b_id) {
-                                        if (cJSON_IsNumber(b_id)) snprintf(b_id_str, sizeof(b_id_str), "%ld", (long)b_id->valuedouble);
-                                        else if (cJSON_IsString(b_id) && b_id->valuestring) strncpy(b_id_str, b_id->valuestring, sizeof(b_id_str) - 1);
-                                    }
-                                    if (cur_id[0] && b_id_str[0] && strcmp(cur_id, b_id_str) == 0) {
-                                        cJSON *b_mac = cJSON_GetObjectItemCaseSensitive(bitem, "bdaddr");
-                                        if (!b_mac) b_mac = cJSON_GetObjectItemCaseSensitive(bitem, "btHost");
-                                        if (b_mac && cJSON_IsString(b_mac) && b_mac->valuestring && hub_valid_bdaddr(b_mac->valuestring)) {
-                                            strncpy(target_bdaddr, b_mac->valuestring, sizeof(target_bdaddr) - 1);
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            cJSON_Delete(bt_root);
-                        }
-                        free(buf);
-                    }
-                }
-                fclose(bf);
-            }
-        }
+        /* config/devices.json is the only device-to-host mapping: without an address there,
+         * bt_reconnect.sh and hub_btstack use the default host (bthid_host_target) */
 
         printf("[*] BT reconnect trigger: device='%s' (id=%s, target=%s) delay=%ds dur=%ds (triggered by cmd='%s' on dev='%s' id='%s')\n",
                cur_name[0] ? cur_name : "BT-Device", cur_id,
@@ -409,47 +410,10 @@ static int hw_device_command_send_match(const char *target, int match_mode, cons
         strncpy(bdaddr, j_bta->valuestring, sizeof(bdaddr) - 1);
     }
 
+    /* config/devices.json is the only device-to-host mapping; without an address there the
+     * device goes to the default host, the one hub_btstack pinned at the last pairing */
     if (!bdaddr[0]) {
-        FILE *bf = fopen("/data/harmony/bt-devices.json", "r");
-        if (bf) {
-            fseek(bf, 0, SEEK_END);
-            long sz = ftell(bf);
-            fseek(bf, 0, SEEK_SET);
-            if (sz > 0 && sz < 65536) {
-                char *buf = malloc(sz + 1);
-                if (buf) {
-                    size_t r = fread(buf, 1, sz, bf);
-                    buf[r] = 0;
-                    cJSON *bj = cJSON_Parse(buf);
-                    free(buf);
-                    if (bj) {
-                        cJSON *devs = cJSON_GetObjectItemCaseSensitive(bj, "devices");
-                        if (devs && cJSON_IsArray(devs)) {
-                            cJSON *di = NULL;
-                            cJSON_ArrayForEach(di, devs) {
-                                cJSON *d_id = cJSON_GetObjectItemCaseSensitive(di, "id");
-                                cJSON *d_name = cJSON_GetObjectItemCaseSensitive(di, "name");
-                                cJSON *d_addr = cJSON_GetObjectItemCaseSensitive(di, "bdaddr");
-                                if (d_addr && cJSON_IsString(d_addr) && d_addr->valuestring[0]) {
-                                    if ((d_id && cJSON_IsString(d_id) && ((target_id_str[0] && strcmp(d_id->valuestring, target_id_str) == 0) || strcmp(d_id->valuestring, target) == 0)) ||
-                                        (d_name && cJSON_IsString(d_name) && strcasecmp(d_name->valuestring, target) == 0) ||
-                                        (dev_name[0] && d_name && cJSON_IsString(d_name) && strcasecmp(d_name->valuestring, dev_name) == 0)) {
-                                        strncpy(bdaddr, d_addr->valuestring, sizeof(bdaddr) - 1);
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        cJSON_Delete(bj);
-                    }
-                }
-            }
-            fclose(bf);
-        }
-    }
-
-    if (!bdaddr[0]) {
-        FILE *tf = fopen("/data/harmony/bthid_target", "r");
+        FILE *tf = fopen("/data/harmony/bthid_host_target", "r");
         if (tf) {
             char line[128];
             while (fgets(line, sizeof(line), tf)) {
@@ -816,4 +780,12 @@ int hw_bthid_send_report(const uint8_t *report, size_t len) {
         return 0;
     }
     return -1;
+}
+
+int hw_bt_release_all(void) {
+    int fd = open("/tmp/bthid_input", O_WRONLY | O_NONBLOCK);
+    if (fd < 0) return -1;
+    ssize_t w = write(fd, "RELEASE\n", 8);
+    close(fd);
+    return (w == 8) ? 0 : -1;
 }

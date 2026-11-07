@@ -233,6 +233,7 @@ void poll_bthid_fifo(void) {
                     if (rel_len > 0) {
                         memcpy(g_host_custom_release_buf, rel_buf, rel_len);
                         g_host_custom_release_len = rel_len;
+                        g_host_pending_cid = cur_cid;
                         g_host_pending_release_type = 3;
                         btstack_run_loop_remove_timer(&g_host_key_release_timer);
                         btstack_run_loop_set_timer(&g_host_key_release_timer, 30);
@@ -272,6 +273,7 @@ void poll_bthid_fifo(void) {
                         send_host_release_all();
                     }
                     hid_device_send_interrupt_message(cur_cid, rep, rlen);
+                    g_host_pending_cid = cur_cid;
                     if (rep[1] == 0x01 && (rlen > 4 && rep[4] != 0)) {
                         g_host_pending_release_type = 1;
                         btstack_run_loop_remove_timer(&g_host_key_release_timer);
@@ -368,11 +370,15 @@ void execute_btstack_cmd(const char *cmd_in) {
             register_host_target(tgt, NULL);
             start_host_reconnect(tgt, MAX_HOST_RECONNECT_ATTEMPTS);
         } else {
-            if (is_any_host_connected()) return;
+            /* No address: the host keys go to (the activity's target, else the pinned host).
+             * "Any host connected" used to count as done, which with two hosts left the one
+             * that matters disconnected. */
             bd_addr_t def_tgt;
-            if (get_pinned_host_target(def_tgt)) {
+            if (get_reconnect_target(def_tgt)) {
+                if (is_host_connected(def_tgt)) return;
                 start_host_reconnect(def_tgt, MAX_HOST_RECONNECT_ATTEMPTS);
             } else if (!is_null_bd_addr(g_host_addr)) {
+                if (is_host_connected(g_host_addr)) return;
                 start_host_reconnect(g_host_addr, MAX_HOST_RECONNECT_ATTEMPTS);
             } else {
                 try_connect_host();

@@ -3,6 +3,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include "cJSON.h"
 #include <unistd.h>
 
 #ifndef DEBUG_LOG_CONFIG
@@ -38,6 +39,9 @@ int hw_ir_send_pronto(const char *pronto_hex, uint8_t ports, uint8_t repeats);
 /*
  * Direct Hardware IR Transmit with raw microsecond timings.
  */
+#ifdef TEST_HARNESS
+cJSON *hw_test_last_raw_json(void);
+#endif
 int hw_ir_send_raw(uint32_t freq_hz, const uint32_t *timings_us, size_t count, uint8_t ports, uint8_t repeats);
 
 /*
@@ -75,6 +79,8 @@ void hw_set_mqtt_button_handler(hw_mqtt_button_handler_t handler);
  * Sends a BT HID report directly via BTstack FIFO (/tmp/bthid_input).
  */
 int hw_bthid_send_report(const uint8_t *report, size_t len);
+/* RELEASE to hub_btstack: every key it still holds on any host goes up. 0 when the pipe took it. */
+int hw_bt_release_all(void);
 
 #ifdef __cplusplus
 }
