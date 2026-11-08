@@ -2,13 +2,13 @@
 
 ## 1. Overview & Architecture
 
-Logitech Harmony Hub communicates locally with paired physical remotes—including the **Harmony Elite 950**, **Harmony Pro 2400**, **Harmony Companion**, and **Harmony Smart Control**—using a proprietary 2.4 GHz RF protocol implemented on **Texas Instruments CC2544** 2.4 GHz RF SoCs. The host processors communicate with the CC2544 over synchronous SPI via the `/dev/rfspi` character device.
+Logitech Harmony Hub communicates locally with paired physical remotes, including the touchscreen remotes (**Harmony Elite 950**, **Harmony Ultimate**, **Harmony Pro 2400**), **Harmony Companion**, and **Harmony Smart Control**, using a proprietary 2.4 GHz RF protocol implemented on **Texas Instruments CC2544** 2.4 GHz RF SoCs. The host processors communicate with the CC2544 over synchronous SPI via the `/dev/rfspi` character device.
 
 ```
 +------------------------------------+              2.4 GHz eQuad RF Link             +------------------------------------+
 |       Harmony Hub (Host Mode)      |                                                |   Harmony Remotes (Device Mode)    |
 |                                    |                                                |                                    |
-| Atheros AR9344 SoC (MIPS 24Kc)    |                                                | • Elite/Pro: TI DaVinci DM365 ARM  |
+| Atheros AR9344 SoC (MIPS 24Kc)    |                                                | • Touchscreen: DaVinci DM365 ARM   |
 |   |                                |                                                | • Companion/Smart: CC2544/MCU      |
 |   | /dev/rfspi (SPI Master)        |                                                |   |                                |
 |   v                                |                                                |   v                                |
@@ -63,7 +63,7 @@ In stock `hal_hub` (`libhal/rf/hot.c`, host mode `DAT_00466f70 == 0`), all bidir
 - **Byte 4 (`Flags`)**: Protocol control flags (e.g. `0x00` normal, `0x01` ACK_REQ, `0x02` IS_ACK).
 - **Bytes 5..29**: 25-byte application payload.
 
-### 3.2 Elite Remote Device Framing (32-byte Report `0x20`, Sub-ID `0x12`)
+### 3.2 Touchscreen Remote Device Framing (32-byte Report `0x20`, Sub-ID `0x12`)
 In stock `hal_remote` (`libhal/rf/hot.c`, device mode `DAT_0003b530 == 1`), the CC2544 on screened remotes operates in device mode. All application data frames over `/dev/rfspi` use **Report `0x20`** with Sub-ID `0x12`:
 
 ```
@@ -125,20 +125,22 @@ On Remote startup or display wake, the CC2544 radio's frequency-hopping spread-s
 
 ### 4.1 Subsystem Initialization
 - **Init Command** (`10 FF 80 00 00 01 00`): Wakes and initializes CC2544 messaging engine.
-- **Factory RF test step** (`10 FF 80 FD 01 00 00`): steps the CC2544 to its next factory test mode; reply `10 FF 80 FD 01 <mode> 00`. Logitech's firmware sends it only from the hidden factory test menu (`rf.test`), which names the modes: `0` RX sweep, `1`-`3` TX unmodulated at 2405/2444/2474 MHz, `4`-`6` TX modulated at the same channels, `7`-`9` RX at those channels, `10` TX sweep unmodulated, `11` ready. A reboot clears it. Not for normal operation: on the remote, from the fifth write since boot the link stays lost (`10 01 41 04 47`). Only `01` is accepted (`00` is rejected with `10 FF 8F 80 FD 03 00`). `elite_ui` does not send it.
+- **Factory RF test step** (`10 FF 80 FD 01 00 00`): steps the CC2544 to its next factory test mode; reply `10 FF 80 FD 01 <mode> 00`. Logitech's firmware sends it only from the hidden factory test menu (`rf.test`), which names the modes: `0` RX sweep, `1`-`3` TX unmodulated at 2405/2444/2474 MHz, `4`-`6` TX modulated at the same channels, `7`-`9` RX at those channels, `10` TX sweep unmodulated, `11` ready. A reboot clears it. Not for normal operation: on the remote, from the fifth write since boot the link stays lost (`10 01 41 04 47`). Only `01` is accepted (`00` is rejected with `10 FF 8F 80 FD 03 00`). `remote_ui` does not send it.
 - **Firmware Version Query** (`10 FF 81 F1 01 00 00`): Returns firmware version. Reply: `10 FF 81 F1 01 <ver> 00` (e.g. `0x27` = v39.00).
 
 ### 4.2 Power Mode Management
-- **Set Active Power Mode** (`20 20 00 00 00 00 00`):
-  - In `libhal/rf/hot.c` (`hot_set_powermode(0x20)`), switches CC2544 receiver into continuous listening mode.
-  - Used on Hub initialization and Remote wake.
+- **Set Power Mode** (`20 <mode> 00 00 00 00 00`, `hot_set_powermode()` in `libhal/rf/hot.c`, same on Hub and remote):
+  - `0x20` (`RF_PM_ACTIVE`): normal operation. Stock sets it when its HOT state machine enters Idle; harmony-ng at start.
+  - `0x30` (`RF_PM_TRANSFER`): for the whole of a transfer. Stock sets it when the state machine leaves Idle (`hot_Idle.exit`) and goes back to `0x20` 500 ms after the last object (`hot_CoolDown`). In this mode the remote's CC2544 fetches the Hub's queued frames by itself, about one every 4 ms on a Harmony Ultimate; in `0x20` it gets one only in the acknowledgement of a frame it transmits. harmony-ng uses it for the windowed RF OTA (measured: 250 frames/s with no remote transmission, against 7/s in `0x20`).
+  - `0x40`: not used by stock; on a Harmony Ultimate the remote stops answering until `0x20` is set again.
+  - A remote in device mode puts the current mode in byte 1 of every frame it sends (`mode | pipe`, section 3.2).
 
 ### 4.3 Pipe & Paired Device Table
 Query command: `10 FF 83 B5 <pipe> 00 00`:
 - **Hub Responses (`11 FF 83 B5 <pipe> ...`)**:
   - `pipe 0x03`: Hub's own 4-byte RF address (`11 FF 83 B5 03 <addr:4> ...`).
   - `pipe 0x20..0x25`: Slot identification / EquadID (`11 FF 83 B5 20 <EquadID:2> ...`):
-    - `0x4021`: Harmony Elite 950 / Pro 2400 (`"Juniper"`)
+    - `0x4021`: Harmony Elite 950 / Ultimate / Pro 2400 (`"Juniper"`)
     - `0x401E`: Harmony Smart Control (`"20+"`)
     - `0x4026`, `0x4027`: Harmony Companion (`"Companion"`, `"Home Control"`)
   - `pipe 0x30..0x35`: Remote 4-byte RF address for slot (`11 FF 83 B5 30 <addr:4> ...`).
@@ -157,7 +159,7 @@ Query command: `10 FF 83 B5 <pipe> 00 00`:
 - **Link Status Event** (`10 <slot> 41 04 <status> <wpid_lo> <wpid_hi>`):
   - `status & 0x40 != 0`: Link **LOST** (`0x47`, `0x40`).
   - `status & 0x40 == 0`: Link **ESTABLISHED** (Remote: `0x07`, `0x0B`; Hub: `0x87`).
-  - `<wpid_lo> <wpid_hi>`: wireless product ID of the peer, little-endian, as in the HID++ 1.0 device connection notification. The Remote reports `0B 88` (the Hub, `0x880B`); the Hub reports `21 40` (the Elite, `0x4021`). The bytes stay the same whether the link is lost or established, so they carry no signal level.
+  - `<wpid_lo> <wpid_hi>`: wireless product ID of the peer, little-endian, as in the HID++ 1.0 device connection notification. The Remote reports `0B 88` (the Hub, `0x880B`); the Hub reports `21 40` (the touchscreen remote, `0x4021`). The bytes stay the same whether the link is lost or established, so they carry no signal level.
 - **Hardware TX Status Report** (`20 <slot> 42 <status>`):
   - `status == 0x00`: The remote's radio received the packet. The remote application can still drop it, so this does not count as delivery; only `RF_MSG_ACK` does.
   - `status != 0x00`: TX failure / drop (`0x01` while the link is lost).
@@ -170,7 +172,7 @@ A sweep of every HID++ 1.0 short (`10 FF 81 <reg> 00 00 00`) and long (`10 FF 83
 | `81 00` | `00 01 00`: notification flags, set by the Init Command | error `02` |
 | `81 01`, `81 03` | `00 00 00` | error `02` |
 | `81 02` | `00 01 00` (on Unifying receivers, the number of connected devices) | error `02` |
-| `81 D0` | `00 00 00` | `00 00 00` before `elite_ui` starts, `01 00 00` after |
+| `81 D0` | `00 00 00` | `00 00 00` before `remote_ui` starts, `01 00 00` after |
 | `81 D2` | error `02` | `00 00 0D`, constant while the link alternates between lost and established |
 | `81 E6`, `81 F0` | `00 00 00` | error `02` |
 | `83 B3` | Device activity: byte 4 + n is an 8-bit counter of payload frames received from slot n + 1 | error `02` |
@@ -219,6 +221,7 @@ All application messages are encapsulated in the payload section of Report `0x12
 | `0x2D` | `RF_MSG_HELP_REQUEST` | Remote -> Hub | Help: repair the running activity |
 | `0x2E` | `RF_MSG_HELP_STATUS` | Hub -> Remote | Help progress, or a device to ask about (ACK'd except a repeated "started"); sent only in reply to `RF_MSG_HELP_REQUEST` |
 | `0x2F` | `RF_MSG_HELP_ANSWER` | Remote -> Hub | Help: whether a device is on (ACK'd) |
+| `0x30` | `RF_MSG_WAKE` | Hub -> Remote | Turn the screen on (ACK'd); a remote in light standby still receives frames. Remotes without it drop it as unknown and send no ACK |
 
 ### 5.2 Key Payload Structures
 
@@ -229,7 +232,7 @@ All application messages are encapsulated in the payload section of Report `0x12
   - `0x01` `RF_CAP_ACT_DEVICES`: understands `RF_MSG_ACT_DEVICES_CHUNK`
   - `0x02` `RF_CAP_LONG_NAMES`: understands `RF_MSG_NAME_TAIL_CHUNK`
 
-The remote sends this report when its link first comes up, every 24 hours, and before each full config request, so a Hub that restarted learns the capabilities before it builds the push. The Hub keeps them in `/data/harmony/elite_slot<N>_version.json` (`caps`). A remote drops frame types it doesn't know without an ACK, so the Hub must not send newer frame types to a remote that doesn't report them.
+The remote sends this report when its link first comes up, every 24 hours, and before each full config request, so a Hub that restarted learns the capabilities before it builds the push. The Hub keeps them in `/data/harmony/remote_slot<N>_version.json` (`caps`). A remote drops frame types it doesn't know without an ACK, so the Hub must not send newer frame types to a remote that doesn't report them.
 
 #### `RF_MSG_ACT_DEVICES_CHUNK` (`0x2B`)
 One frame per activity, after the device list in a config push:
@@ -273,7 +276,7 @@ Both frames use a 17-byte standardized configuration payload:
 - `payload[0]`: Display Brightness (1–5)
 - `payload[1]`: Screen Timeout low byte (seconds)
 - `payload[2]`: Touchscreen Enabled (`0x01` on, `0x00` off)
-- `payload[3..4]`: Nav Toggle Key Linux code (16-bit unsigned little-endian, e.g. `139` = KEY_MENU). Current Elite firmware has no NAV toggle: it ignores these bytes and sends `0`; older firmware reads them.
+- `payload[3..4]`: Nav Toggle Key Linux code (16-bit unsigned little-endian, e.g. `139` = KEY_MENU). Current remote firmware has no NAV toggle: it ignores these bytes and sends `0`; older firmware reads them.
 - `payload[5]`: Nav Toggle Mode (`0x00` Short Press, `0x01` Long Press); ignored and sent as `0` like the key
 - `payload[6]`: USB Ethernet Enabled (`0x01` on, `0x00` off)
 - `payload[7]`: Activity Switch Confirmation (`0x01` Prompt, `0x00` Instant)
@@ -373,7 +376,11 @@ Both frames use a 17-byte standardized configuration payload:
   - `payload[1]`: Charging flag (`0x01` charging, `0x00` discharging).
   - `payload[2..3]`: Voltage in millivolts (16-bit unsigned little-endian).
 
----
+#### RF OTA transfer (`0x22`..`0x25` and the `0x60` data frame)
+- `RF_MSG_OTA_START` (`0x22`, ACK'd): `payload[0..3]` image size, `payload[4..5]` chunk count for the stop-and-wait transfer (22-byte chunks), `payload[6..9]` CRC32 of the image (identifies a checkpoint). The remote's ACK: `payload[1]` status (`0x02` low battery, `0x03` cannot write), `payload[2..3]` the 22-byte chunk to resume from (checkpoint made by a stop-and-wait transfer), `payload[4]` = `0xF1` (`RF_OTA_WINDOWED`) if the remote supports the windowed transfer, `payload[6..7]` the 26-byte chunk to resume from (checkpoint made by a windowed transfer). A remote cannot continue a checkpoint with the other kind of frames; it starts over.
+- Stop-and-wait transfer (`RF_MSG_OTA_CHUNK` `0x23`): `payload[0..1]` chunk index, `payload[2]` length, `payload[3..24]` up to 22 data bytes. The Hub asks for an ACK on every 4th chunk and waits for it (15 retries with backoff and CC2544 wake pulses), 15 ms between chunks. About 20 chunks/s (440 B/s) on a Harmony Ultimate. Used for remotes that do not announce `0xF1`.
+- Windowed transfer (remote announced `0xF1`): the Hub sets CC2544 power mode `0x30` on both ends (section 4.2) and streams **OTA data frames**, which have no message type: like Logitech's own HOT continuation packets they use the header byte `0x60`: `12 <slot> <0x60 | idx[3:0] | ack> <idx[11:4]> <data[26]>` (30-byte Hub frame; the remote reads it as `20 <pipe> 12 <slot> <hdr> <idx[11:4]> <data[26]>`). `ack` = `0x10` asks for an ACK; the chunk index is 12 bits and the remote completes it from the chunk it expects next; the last chunk is shorter (the remote knows the image size). Every ACK carries the remote's contiguous chunk count in `payload[2..3]` and `0xF1` in `payload[4]`. The Hub streams with 2 ms between frames (the Hub's CC2544 queues 8 and drops frames beyond that), asks for an ACK every 16th chunk without waiting, stays at most 64 chunks ahead of the contiguous count, and resends from that count when it has not advanced for 300 ms (go-back-N). It gives up (resumable) after 20 s without progress. A remote accepts these frames only while in OTA mode. Measured on a Harmony Ultimate: about 250 frames/s, 6.5 KB/s, the 667 KB image in about 100 s.
+- `RF_MSG_OTA_END` (`0x25`, ACK'd): `payload[0]` = `0x01`, `payload[1..20]` first 20 bytes of the image's SHA-256. The remote checks it has every chunk (`0x05` otherwise), verifies the digest (`0x06` on mismatch), installs and reboots.
 
 ## 6. Reverse Engineering Reference Mapping
 

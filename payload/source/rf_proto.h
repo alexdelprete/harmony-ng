@@ -45,6 +45,31 @@
 #define RF_MSG_OTA_CHUNK           0x23  /* Hub -> Remote: 24-byte binary chunk */
 #define RF_MSG_OTA_BLOCK_ACK       0x24  /* Remote -> Hub: ACK per block */
 #define RF_MSG_OTA_END             0x25  /* Hub -> Remote: complete / verify checksum */
+/* payload[4] of the OTA_START ACK and of every OTA data ACK from a remote that supports the
+ * windowed transfer with RF_OTA_DATA frames (below); its ACKs then carry the number of contiguous
+ * 26-byte chunks it has in payload[2..3], and the OTA_START ACK the chunk to resume from in
+ * payload[6..7] (payload[2..3] stays the 22-byte chunk count for the stop-and-wait transfer). */
+#define RF_OTA_WINDOWED            0xF1
+/* OTA data frame, Hub -> Remote, windowed transfer only. It has no message type: like Logitech's
+ * own HOT continuation packets it uses the header byte 0x60 and carries 26 data bytes in the
+ * 30-byte Hub frame: 12 <slot> <0x60 | idx[3:0] | ack> <idx[11:4]> <data[26]>, where ack = 0x10
+ * asks the remote for an ACK and the chunk index is 12 bits (the remote completes it from the
+ * chunk it expects; 64 in flight is far below 4096). The last chunk is shorter: the remote knows
+ * the image size from OTA_START. A remote accepts these only while in OTA mode. */
+#define RF_OTA_HDR_DATA            0x60
+#define RF_OTA_HDR_ACK             0x10
+#define RF_OTA_DATA_BYTES          26
+/* Chunk size of the stop-and-wait transfer (RF_MSG_OTA_CHUNK: index, length, 22 data bytes) */
+#define RF_OTA_CHUNK_BYTES         22
+/* Largest OTA image: chunk counts are 16-bit and the stop-and-wait chunks are the smallest */
+#define RF_OTA_MAX_BYTES           (65535u * RF_OTA_CHUNK_BYTES)
+/* CC2544 power modes (command 20 <mode> 00 00 00 00 00): Logitech's firmware runs the radio in
+ * RF_PM_TRANSFER for the whole of a HOT transfer and in RF_PM_ACTIVE otherwise. In RF_PM_TRANSFER
+ * the remote's radio fetches the Hub's queued frames by itself (about 250 a second on a Harmony
+ * Ultimate); in RF_PM_ACTIVE it gets one only when it transmits. A remote puts the current mode
+ * in byte 1 of every frame it sends (mode | pipe). */
+#define RF_PM_ACTIVE               0x20
+#define RF_PM_TRANSFER             0x30
 
 /* Custom Icon Push (Hub -> Remote) */
 #define RF_MSG_ICON_START          0x26  /* Hub -> Remote: start custom icon transfer */
@@ -65,6 +90,10 @@
 #define RF_MSG_HELP_REQUEST        0x2D  /* Remote -> Hub: repair the running activity */
 #define RF_MSG_HELP_STATUS         0x2E  /* Hub -> Remote: Help progress, or a device to ask about (ACK'd) */
 #define RF_MSG_HELP_ANSWER         0x2F  /* Remote -> Hub: whether a device is on (ACK'd) */
+
+/* Hub -> Remote: turn the screen on (ACK'd). A remote in light standby still receives frames;
+ * one without this message drops it as unknown and sends no ACK. */
+#define RF_MSG_WAKE                0x30
 
 /* RF_MSG_HELP_STATUS payload[0] */
 #define RF_HELP_QUESTION           0x00  /* [1] index, [2] count, [3..10] device id, [11..24] name */
@@ -119,7 +148,7 @@ static inline int rf_is_valid_frame(const uint8_t *raw, size_t len) {
             uint8_t t = raw[5];
             return (t >= RF_MSG_ACTIVITY_SYNC && t <= RF_MSG_DEVICE_CMD_INDEX) ||
                    (t >= RF_MSG_BUTTON_PRESS && t <= RF_MSG_SLEEP_REQ) ||
-                   (t >= RF_MSG_OTA_START && t <= RF_MSG_HELP_ANSWER) ||
+                   (t >= RF_MSG_OTA_START && t <= RF_MSG_WAKE) ||
                    (t == RF_MSG_ACK || t == RF_MSG_PING);
         }
         return 0;
@@ -129,7 +158,7 @@ static inline int rf_is_valid_frame(const uint8_t *raw, size_t len) {
             uint8_t t = raw[3];
             return (t >= RF_MSG_ACTIVITY_SYNC && t <= RF_MSG_DEVICE_CMD_INDEX) ||
                    (t >= RF_MSG_BUTTON_PRESS && t <= RF_MSG_SLEEP_REQ) ||
-                   (t >= RF_MSG_OTA_START && t <= RF_MSG_HELP_ANSWER) ||
+                   (t >= RF_MSG_OTA_START && t <= RF_MSG_WAKE) ||
                    (t == RF_MSG_ACK || t == RF_MSG_PING);
         }
         return 0;

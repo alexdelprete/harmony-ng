@@ -1,6 +1,8 @@
 #define _GNU_SOURCE
 #include "config_store.h"
+#include "bt_migrate.h"
 #include "config_sanitize.h"
+#include "hub_led.h"
 #include "bt_common.h"
 #include "cJSON.h"
 
@@ -55,9 +57,19 @@ const char *config_store_path(const char *rel_path) {
     return s_buf;
 }
 
+static void config_store_migrate_log(const char *msg) {
+    printf("[*] %s\n", msg);
+}
+
 int config_store_init(void) {
     mkdir(HARMONY_DIR, 0755);
     mkdir(HARMONY_CONFIG_DIR, 0755);
+
+    /* Fold the legacy Bluetooth host files (bt-devices.json, bthid_target) into devices.json
+     * before it is loaded: hub_daemon caches devices.json and writes the cache back on every
+     * edit, so a change made behind its back would be lost. A restored backup that carries
+     * bt-devices.json is folded in here too, since the restore calls config_store_init(). */
+    bt_migrate_legacy_state(HARMONY_DIR, config_store_migrate_log);
 
     pthread_mutex_lock(&g_cfg_lock);
     if (g_devices_json_cache) { cJSON_Delete(g_devices_json_cache); g_devices_json_cache = NULL; }
@@ -521,56 +533,6 @@ int run_bt_saved_script(const char *type, const char *bdaddr, const char *script
     return 0;
 }
 
-int save_bthid_target(const char *type, const char *bdaddr) {
-    if (!bdaddr || !bdaddr[0]) return -1;
-    const char *target_path = "/data/harmony/bthid_target";
-    FILE *f = fopen(target_path, "w");
-    if (!f) return -1;
-    fprintf(f, "%s %s\n", (type && type[0]) ? type : "btkeyboard", bdaddr);
-    fclose(f);
-    return 0;
-}
-
-int load_bt_inventory(struct bt_inventory *inv) {
-    if (!inv) return -1;
-    memset(inv, 0, sizeof(*inv));
-    const char *bt_path = "/data/harmony/bt-devices.json";
-    char *raw = read_file_text(bt_path, 1024 * 1024);
-    if (!raw) return 0;
-    cJSON *root = cJSON_Parse(raw);
-    free(raw);
-    if (!root) return 0;
-
-    cJSON *devs = cJSON_IsArray(root) ? root : cJSON_GetObjectItemCaseSensitive(root, "devices");
-    if (devs && cJSON_IsArray(devs)) {
-        const cJSON *d = NULL;
-        cJSON_ArrayForEach(d, devs) {
-            if (inv->device_count >= 12) break;
-            struct bt_saved_device *bdev = &inv->devices[inv->device_count];
-            const cJSON *jid = cJSON_GetObjectItemCaseSensitive(d, "id");
-            if (jid && cJSON_IsString(jid) && jid->valuestring) {
-                strncpy(bdev->id, jid->valuestring, sizeof(bdev->id) - 1);
-            }
-            const cJSON *jname = cJSON_GetObjectItemCaseSensitive(d, "name");
-            if (jname && cJSON_IsString(jname) && jname->valuestring) {
-                strncpy(bdev->name, jname->valuestring, sizeof(bdev->name) - 1);
-            }
-            const cJSON *jaddr = cJSON_GetObjectItemCaseSensitive(d, "bdaddr");
-            if (!jaddr) jaddr = cJSON_GetObjectItemCaseSensitive(d, "address");
-            if (jaddr && cJSON_IsString(jaddr) && jaddr->valuestring) {
-                strncpy(bdev->bdaddr, jaddr->valuestring, sizeof(bdev->bdaddr) - 1);
-            }
-            const cJSON *jtype = cJSON_GetObjectItemCaseSensitive(d, "type");
-            if (jtype && cJSON_IsString(jtype) && jtype->valuestring) {
-                strncpy(bdev->type, jtype->valuestring, sizeof(bdev->type) - 1);
-            }
-            inv->device_count++;
-        }
-    }
-    cJSON_Delete(root);
-    return 0;
-}
-
 int config_store_get_settings(struct hub_settings *settings) {
     if (!settings) return -1;
     settings->dry_run = 0;
@@ -578,7 +540,7 @@ int config_store_get_settings(struct hub_settings *settings) {
     settings->hub_name[sizeof(settings->hub_name) - 1] = '\0';
     settings->ntp_server[0] = '\0';
     strncpy(settings->timezone, "UTC", sizeof(settings->timezone) - 1);
-    strncpy(settings->led_mode, "always_on", sizeof(settings->led_mode) - 1);
+    strncpy(settings->led_mode, HUB_LED_DEFAULT_MODE, sizeof(settings->led_mode) - 1);
 
     const char *settings_path = HARMONY_SETTINGS_FILE;
     char *raw = read_file_text(settings_path, 64 * 1024);
@@ -628,7 +590,7 @@ int config_store_save_settings(const struct hub_settings *settings) {
     cJSON_AddStringToObject(root, "hub_name", settings->hub_name[0] ? settings->hub_name : "Harmony Hub");
     cJSON_AddStringToObject(root, "ntp_server", settings->ntp_server);
     cJSON_AddStringToObject(root, "timezone", settings->timezone[0] ? settings->timezone : "UTC");
-    cJSON_AddStringToObject(root, "led_mode", settings->led_mode[0] ? settings->led_mode : "always_on");
+    cJSON_AddStringToObject(root, "led_mode", settings->led_mode[0] ? settings->led_mode : HUB_LED_DEFAULT_MODE);
 
     char *out = cJSON_Print(root);
     cJSON_Delete(root);
