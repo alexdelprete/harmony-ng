@@ -429,6 +429,9 @@ cJSON *hub_cmd_execute_from(const cJSON *req, int role, int origin) {
                                                 st == ORCH_STATE_STOPPING ? "stopping" : "idle");
         cJSON_AddBoolToObject(r, "busy", orch_is_busy() ? 1 : 0);
         cJSON_AddBoolToObject(r, "sending", orch_is_sending() ? 1 : 0);
+        char queued[32];
+        if (orch_get_queued_activity(queued, sizeof(queued))) cJSON_AddStringToObject(r, "queued", queued);
+        else cJSON_AddNullToObject(r, "queued");
         return r;
     }
     if (strcmp(action, "get_snapshot") == 0) {
@@ -466,11 +469,16 @@ cJSON *hub_cmd_execute_from(const cJSON *req, int role, int origin) {
         }
         if (!target || !target[0]) return ack(req, action, 0, 400, "activity required");
         int rc = orch_switch_activity(target, 0, NULL, 0);
-        return rc == 0 ? ack(req, action, 1, 200, NULL) : ack(req, action, 0, 409, "busy");
+        if (rc < 0) return ack(req, action, 0, 500, "could not build the transition");
+        cJSON *r = ack(req, action, 1, 200, NULL);
+        if (r) cJSON_AddStringToObject(r, "state", rc == 1 ? "queued" : "starting");
+        return r;
     }
     if (strcmp(action, "stop_activity") == 0 || strcmp(action, "power_off") == 0) {
         int rc = orch_power_off(0, NULL, 0);
-        cJSON *r = rc == 0 ? ack(req, "stop_activity", 1, 200, NULL) : ack(req, "stop_activity", 0, 409, "busy");
+        if (rc < 0) return ack(req, action, 0, 500, "could not build the transition");
+        cJSON *r = ack(req, action, 1, 200, NULL);
+        if (r) cJSON_AddStringToObject(r, "state", rc == 1 ? "queued" : "stopping");
         return r;
     }
     if (strcmp(action, "cancel_activity") == 0 || strcmp(action, "reset_interlock") == 0) {
