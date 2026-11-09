@@ -18,9 +18,9 @@ says so ("As built"); section 9 lists what was added beyond it.
 | Milestones 2 and 3 (mDNS, MQTT v2) | #99 (A2) | merged |
 | Milestone 4 (Logitech shim, SSDP) | #103 (A3) | merged |
 | Section 9 additions | #104 (A4), #101 | merged |
-| Activity requests queued during a transition (follow-up) | #105 | open |
+| Activity requests queued during a transition, `queued` in `activity_state` (follow-up) | #105 | merged |
 
-Everything above except #105 is in upstream main as of 2026-11-09. The development Hub and remote run main plus #105.
+Everything above is in upstream main as of 2026-11-09 (#105 merged 19:14 UTC). The development Hub and remote run main.
 
 ## 0. How to use this document
 
