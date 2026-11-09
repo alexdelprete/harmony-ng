@@ -19,7 +19,7 @@ says so ("As built"); section 9 lists what was added beyond it.
 | Milestone 4 (Logitech shim, SSDP) | A3 | not posted yet (after #99) |
 | Section 9 additions | A4, #101 | A4 not posted yet; #101 open |
 
-The Hub and the remote at Casa Fiano run all of it (upstream main plus #99, A3, A4 and #101).
+The development Hub and remote run all of it (upstream main plus #99, A3, A4 and #101).
 
 ## 0. How to use this document
 
