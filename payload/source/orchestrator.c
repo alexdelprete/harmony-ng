@@ -1,4 +1,5 @@
 #include "orchestrator.h"
+#include "hub_events.h"
 #include "orchestrator_queue.h"
 #include "hw_action.h"
 #include "cJSON.h"
@@ -47,16 +48,19 @@ static uint64_t get_now_ms(void) {
 
 static void save_current_activity(const char *act_id) {
     if (!act_id || !act_id[0]) return;
+    /* Mirror to /tmp in RAM for atomic zero-contention reads */
+    FILE *ft = fopen("/tmp/current_activity", "w");
+    if (ft) {
+        fprintf(ft, "%s\n", act_id);
+        fclose(ft);
+    }
     char tmp[64];
     snprintf(tmp, sizeof(tmp), "%s.tmp", PRIMARY_CURRENT_ACT_FILE);
     FILE *f = fopen(tmp, "w");
     if (!f) return;
     fprintf(f, "%s\n", act_id);
-    fflush(f);
-    fsync(fileno(f));
     fclose(f);
     rename(tmp, PRIMARY_CURRENT_ACT_FILE);
-    sync();
 }
 
 static void load_current_activity(void) {
@@ -72,16 +76,48 @@ static void load_current_activity(void) {
     }
 }
 
+/* Activity state event (spec 3.2): one HUB_EV_ACTIVITY_STATE per change of state or activity,
+ * same shape as the WebSocket get_state reply and GET /api/activity. The first call (from
+ * orch_init) always emits, so sinks have a baseline. Callers may hold g_act_lock. */
+static int g_last_emitted_state = -1;
+static char g_last_emitted_act[32] = "";
+
+static const char *orch_state_name(orch_state_t st) {
+    switch (st) {
+        case ORCH_STATE_STARTING: return "starting";
+        case ORCH_STATE_RUNNING: return "running";
+        case ORCH_STATE_STOPPING: return "stopping";
+        default: return "idle";
+    }
+}
+
+static void set_state(orch_state_t st) {
+    g_state = st;
+    if ((int)st == g_last_emitted_state && strcmp(g_current_act, g_last_emitted_act) == 0) return;
+    g_last_emitted_state = (int)st;
+    strncpy(g_last_emitted_act, g_current_act, sizeof(g_last_emitted_act) - 1);
+    g_last_emitted_act[sizeof(g_last_emitted_act) - 1] = '\0';
+    cJSON *p = cJSON_CreateObject();
+    if (!p) return;
+    cJSON_AddStringToObject(p, "activity", g_current_act[0] ? g_current_act : ORCH_POWEROFF_ID);
+    cJSON_AddNumberToObject(p, "state", (int)st);
+    cJSON_AddStringToObject(p, "stateName", orch_state_name(st));
+    cJSON_AddBoolToObject(p, "busy", (st == ORCH_STATE_STARTING || st == ORCH_STATE_STOPPING) ? 1 : 0);
+    cJSON_AddBoolToObject(p, "sending", (g_queue_len > 0 || g_bg_len > 0) ? 1 : 0);
+    hub_events_emit(HUB_EV_ACTIVITY_STATE, p);
+}
+
 int orch_init(void) {
-    pthread_mutex_lock(&g_act_lock);
-    load_current_activity();
-    g_state = (strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING;
-    pthread_mutex_unlock(&g_act_lock);
     g_queue_len = 0;
     g_current_step = 0;
     g_next_deadline_ms = 0;
     g_bg_len = 0;
     memset(g_bg_queue, 0, sizeof(g_bg_queue));
+    pthread_mutex_lock(&g_act_lock);
+    load_current_activity();
+    /* Emits the baseline activity_state event */
+    set_state((strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING);
+    pthread_mutex_unlock(&g_act_lock);
     return 0;
 }
 
@@ -127,12 +163,10 @@ void orch_cancel(void) {
     if (g_state == ORCH_STATE_STOPPING) {
         strncpy(g_current_act, ORCH_POWEROFF_ID, sizeof(g_current_act) - 1);
         save_current_activity(g_current_act);
-        g_state = ORCH_STATE_IDLE;
+        set_state(ORCH_STATE_IDLE);
         pthread_mutex_unlock(&g_act_lock);
-        hub_send_btstack_cmd("disconnect_host\n");
-        system("killall -9 bt_reconnect.sh 2>/dev/null");
     } else {
-        g_state = (strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING;
+        set_state((strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING);
         pthread_mutex_unlock(&g_act_lock);
     }
     g_queue_len = 0;
@@ -258,13 +292,8 @@ int orch_tick(void) {
             pthread_mutex_lock(&g_act_lock);
             strncpy(g_current_act, g_target_act, sizeof(g_current_act) - 1);
             save_current_activity(g_current_act);
-            g_state = (strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING;
+            set_state((strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING);
             pthread_mutex_unlock(&g_act_lock);
-
-            if (strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) {
-                hub_send_btstack_cmd("disconnect_host\n");
-                system("killall -9 bt_reconnect.sh 2>/dev/null");
-            }
 
             if (g_progress_cb) {
                 g_progress_cb(g_target_act, g_state, (int)g_current_step + 1,
@@ -274,6 +303,9 @@ int orch_tick(void) {
             g_next_deadline_ms = now;
             return 1;
         } else {
+            printf("[*] Orch step %zu/%zu: %s (type=%d, delay=%ums)\n",
+                   g_current_step + 1, g_queue_len, step->description, step->type, step->delay_ms);
+            fflush(stdout);
             execute_step(step);
         }
 
@@ -292,20 +324,11 @@ int orch_tick(void) {
         pthread_mutex_lock(&g_act_lock);
         strncpy(g_current_act, g_target_act, sizeof(g_current_act) - 1);
         save_current_activity(g_current_act);
-        g_state = (strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING;
+        set_state((strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING);
         pthread_mutex_unlock(&g_act_lock);
     }
     g_queue_len = 0;
     g_current_step = 0;
-
-    pthread_mutex_lock(&g_act_lock);
-    int is_poweroff = (strcmp(g_current_act, ORCH_POWEROFF_ID) == 0);
-    pthread_mutex_unlock(&g_act_lock);
-
-    if (is_poweroff) {
-        hub_send_btstack_cmd("disconnect_host\n");
-        system("killall -9 bt_reconnect.sh 2>/dev/null");
-    }
 
     if (g_progress_cb) {
         g_progress_cb(g_current_act, g_state, 0, 0, "Transition completed", g_cb_user_data);
@@ -415,11 +438,16 @@ int orch_switch_activity(const char *target_activity_id, int dry_run,
     memset(g_bg_queue, 0, sizeof(g_bg_queue));
 
     strncpy(g_target_act, target_activity_id, sizeof(g_target_act) - 1);
-    g_state = (strcmp(target_activity_id, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_STOPPING : ORCH_STATE_STARTING;
+    set_state((strcmp(target_activity_id, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_STOPPING : ORCH_STATE_STARTING);
+    
+    if (strcmp(target_activity_id, ORCH_POWEROFF_ID) == 0) {
+        save_current_activity(ORCH_POWEROFF_ID);
+        hub_send_btstack_cmd("stop_reconnect\n");
+    }
 
     int rc = orch_compile_transition(target_activity_id);
     if (rc != 0) {
-        g_state = (strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING;
+        set_state((strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING);
         return -1;
     }
 
@@ -427,13 +455,8 @@ int orch_switch_activity(const char *target_activity_id, int dry_run,
         pthread_mutex_lock(&g_act_lock);
         strncpy(g_current_act, g_target_act, sizeof(g_current_act) - 1);
         save_current_activity(g_current_act);
-        g_state = (strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING;
+        set_state((strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING);
         pthread_mutex_unlock(&g_act_lock);
-
-        if (strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) {
-            hub_send_btstack_cmd("disconnect_host\n");
-            system("killall -9 bt_reconnect.sh 2>/dev/null");
-        }
 
         if (g_progress_cb) {
             g_progress_cb(g_target_act, g_state, 0, 0, "Transition completed", g_cb_user_data);
@@ -507,7 +530,7 @@ int orch_repair_activity(const char *act_id, int dry_run, orch_toggle_t *toggles
         memset(g_bg_queue, 0, sizeof(g_bg_queue));
         strncpy(g_target_act, act_id, sizeof(g_target_act) - 1);
         /* The queue returns to RUNNING after its last main step; with none, stay RUNNING */
-        if (m > 0) g_state = ORCH_STATE_STARTING;
+        if (m > 0) set_state(ORCH_STATE_STARTING);
         orch_enqueue_steps(main_steps, m);
         orch_enqueue_bg_steps(bg_steps, b);
         if (g_progress_cb) {

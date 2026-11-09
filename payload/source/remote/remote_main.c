@@ -3,6 +3,7 @@
 #include "remote_power.h"
 #include "remote_config.h"
 #include "remote_rf.h"
+#include "mfg_id.h"
 #include "remote_rf_sync.h"
 #include "remote_rf_ota.h"
 #include "remote_ui.h"
@@ -188,6 +189,12 @@ int main(int argc, char **argv) {
     sigaction(SIGILL, &sa, NULL);
 
     printf("[+] Starting Harmony remote custom interface (remote_ui v%s)...\n", HARMONY_REMOTE_VERSION);
+    if (mfg_read_unitid(getenv("HARMONY_MFG_FILE"), g_remote_unit_id, sizeof(g_remote_unit_id)) == 0) {
+        printf("[+] Unit id %s (mfg partition)\n", g_remote_unit_id);
+    } else {
+        g_remote_unit_id[0] = '\0';
+        printf("[!] No unit id in the mfg partition: none will be reported to the Hub\n");
+    }
 
     load_settings_conf();
     load_activity_usage();
@@ -665,6 +672,15 @@ int main(int argc, char **argv) {
                     if (!g_menu_open && ui_help_active() && ev.value != 0 && ui_help_handle_key(ev.code)) continue;
 
                     uint16_t rf_code = linux_to_harmony_rf_key(ev.code);
+
+                    /* With physical navigation enabled, the bottom keys drive the screen on all views (KEY_BACK passes through to RF) */
+                    if (g_physical_nav_enabled) {
+                        if (ev.code == 78 || ev.code == 74 || ev.code == 149 || ev.code == 203 ||
+                            ev.code == 148 || ev.code == 202 || ev.code == 102 || ev.code == 364) {
+                            handle_navigation_key(ev.code, ev.value);
+                            continue;
+                        }
+                    }
 
                     /* Without touch, and in Settings and Pairing, the bottom keys and Back drive the screen */
                     if (!g_touch_enabled || g_current_view == VIEW_SETTINGS || g_current_view == VIEW_PAIRING) {

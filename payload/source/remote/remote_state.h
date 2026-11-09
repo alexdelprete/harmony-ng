@@ -272,6 +272,7 @@ extern int g_factory_reset_stage;
 extern uint64_t g_suspend_countdown_start_ms;
 extern int g_selected_pair_opt;
 extern bool g_touch_enabled;
+extern bool g_physical_nav_enabled;
 extern bool g_cap_buttons_enabled;
 extern int g_touch_sensitivity;
 extern uint64_t g_last_switch_completed_ms;
@@ -350,6 +351,16 @@ uint64_t get_monotonic_us(void);
  * difference would wrap to a huge age. */
 static inline uint64_t ms_since(uint64_t now_ms, uint64_t then_ms) {
     return now_ms > then_ms ? now_ms - then_ms : 0;
+}
+
+/* Copies at most n-1 bytes and always terminates (nothing is written when n is 0). strncpy did
+ * the same where it was used (the buffers are zeroed), but newer compilers warn that it may cut
+ * the string. */
+static inline void copy_str(char *dst, size_t n, const char *src) {
+    if (!dst || n == 0) return;
+    size_t l = src ? strnlen(src, n - 1) : 0;
+    if (l) memcpy(dst, src, l);
+    dst[l] = '\0';
 }
 
 /* Files the renderer and config loader read are opened through remote_fs_path(). On the

@@ -1,3 +1,5 @@
+#include "hub_events.h"
+#include "state_watch.h"
 #include "http_api_remotes.h"
 #include "http_util.h"
 #include "config_store.h"
@@ -303,6 +305,34 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
         return 1;
     }
 
+    /* Route: POST /api/rf/status-changed (internal): hub_rf pushes its GET /api/rf/status object
+     * whenever it changed. Loopback only; loopback callers are admin in http_auth, so hub_rf
+     * needs no token (same rule as its button-press posts). */
+    if (strcmp(clean_path, "/api/rf/status-changed") == 0 && strcmp(method, "POST") == 0) {
+        char cip[64] = {0};
+        get_client_ip(client_fd, cip, sizeof(cip));
+        if (strcmp(cip, "127.0.0.1") != 0 && strcmp(cip, "::1") != 0 && strcmp(cip, "::ffff:127.0.0.1") != 0) {
+            send_json_error(client_fd, 403, "loopback only");
+            close(client_fd);
+            return 1;
+        }
+        cJSON *st = (body && body[0]) ? cJSON_Parse(body) : NULL;
+        if (!st || !cJSON_IsObject(st)) {
+            cJSON_Delete(st);
+            send_json_error(client_fd, 400, "status object required");
+            close(client_fd);
+            return 1;
+        }
+        int emitted = state_watch_offer_rf_status(st); /* takes ownership */
+        cJSON *resp = cJSON_CreateObject();
+        cJSON_AddBoolToObject(resp, "ok", 1);
+        cJSON_AddBoolToObject(resp, "changed", emitted ? 1 : 0);
+        send_cjson_resp(client_fd, 200, resp);
+        cJSON_Delete(resp);
+        close(client_fd);
+        return 1;
+    }
+
     /* Route: /api/rf/... proxy to RF daemon (127.0.0.1:8092) */
     if (strcmp(clean_path, "/api/rf") == 0 || strncmp(clean_path, "/api/rf/", 8) == 0) {
         int rfsock = socket(AF_INET, SOCK_STREAM, 0);
@@ -313,23 +343,30 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
             sin.sin_port = htons(8092);
             sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
-            struct timeval tv = { .tv_sec = 0, .tv_usec = 400000 };
+            struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
             setsockopt(rfsock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
             setsockopt(rfsock, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
 
             if (connect(rfsock, (struct sockaddr *)&sin, sizeof(sin)) == 0) {
+                char target_url[256];
+                if (query && *query) {
+                    snprintf(target_url, sizeof(target_url), "%s?%s", clean_path, query);
+                } else {
+                    snprintf(target_url, sizeof(target_url), "%s", clean_path);
+                }
+
                 char proxy_req[512];
                 int body_len = (body && *body) ? (int)strlen(body) : 0;
                 if (body_len > 0) {
                     int prlen = snprintf(proxy_req, sizeof(proxy_req),
                         "%s %s HTTP/1.1\r\nHost: 127.0.0.1:8092\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
-                        method, clean_path, body_len);
+                        method, target_url, body_len);
                     if (prlen > 0) write(rfsock, proxy_req, (size_t)prlen);
                     write(rfsock, body, (size_t)body_len);
                 } else {
                     int prlen = snprintf(proxy_req, sizeof(proxy_req),
                         "%s %s HTTP/1.1\r\nHost: 127.0.0.1:8092\r\nConnection: close\r\n\r\n",
-                        method, clean_path);
+                        method, target_url);
                     if (prlen > 0) write(rfsock, proxy_req, (size_t)prlen);
                 }
 
@@ -377,12 +414,14 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
         strcmp(method, "POST") == 0) {
         char dev_id[64] = {0};
         char dev_name[128] = {0};
-        char cmd_name[128] = {0};
+        char cmd_name[128] = {0};     /* key name for the MQTT mirror (button, else command) */
+        char mapped_cmd[128] = {0};   /* device command the key is mapped to (hub_rf, "command" next to "button") */
         char req_source[32] = {0};
         char req_action[32] = {0};
         int req_pulse_ms = 0;
         char req_topic[256] = {0};
         int req_slot = 1;
+        int has_slot = 0;
 
         cJSON *req_j = body ? cJSON_Parse(body) : NULL;
         if (req_j) {
@@ -394,9 +433,16 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
             cJSON *jdev = cJSON_GetObjectItemCaseSensitive(req_j, "device");
             if (jdev && cJSON_IsString(jdev) && jdev->valuestring) strncpy(dev_name, jdev->valuestring, sizeof(dev_name) - 1);
 
+            /* hub_rf posts the physical key as "button" and, when it sent a device command, the
+             * target as "deviceId"/"command". Older callers post the key as "command". */
+            cJSON *jbtn = cJSON_GetObjectItemCaseSensitive(req_j, "button");
             cJSON *jcmd = cJSON_GetObjectItemCaseSensitive(req_j, "command");
-            if (!jcmd) jcmd = cJSON_GetObjectItemCaseSensitive(req_j, "button");
-            if (jcmd && cJSON_IsString(jcmd) && jcmd->valuestring) strncpy(cmd_name, jcmd->valuestring, sizeof(cmd_name) - 1);
+            if (jbtn && cJSON_IsString(jbtn) && jbtn->valuestring && jbtn->valuestring[0]) {
+                strncpy(cmd_name, jbtn->valuestring, sizeof(cmd_name) - 1);
+                if (jcmd && cJSON_IsString(jcmd) && jcmd->valuestring) strncpy(mapped_cmd, jcmd->valuestring, sizeof(mapped_cmd) - 1);
+            } else if (jcmd && cJSON_IsString(jcmd) && jcmd->valuestring) {
+                strncpy(cmd_name, jcmd->valuestring, sizeof(cmd_name) - 1);
+            }
 
             cJSON *jsrc = cJSON_GetObjectItemCaseSensitive(req_j, "source");
             if (jsrc && cJSON_IsString(jsrc) && jsrc->valuestring) strncpy(req_source, jsrc->valuestring, sizeof(req_source) - 1);
@@ -411,7 +457,10 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
             cJSON *jp = cJSON_GetObjectItemCaseSensitive(req_j, "pulseMs");
             if (!jp) jp = cJSON_GetObjectItemCaseSensitive(req_j, "pulse_ms");
             cJSON *js = cJSON_GetObjectItemCaseSensitive(req_j, "slot");
-            if (js && cJSON_IsNumber(js) && js->valueint >= 1 && js->valueint <= 2) req_slot = js->valueint;
+            if (js && cJSON_IsNumber(js) && js->valueint >= 1 && js->valueint <= 2) {
+                req_slot = js->valueint;
+                has_slot = 1;
+            }
             cJSON_Delete(req_j);
         }
 
@@ -421,41 +470,32 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
             return 1;
         }
 
-        char final_topic[256] = {0};
-        int final_pulse_ms = 0;
-        int mrc = -1;
-
-        if (req_source[0]) {
-            mrc = mqtt_dispatch_remote_button(req_source, req_action, cmd_name, req_slot, req_topic[0] ? req_topic : NULL, req_pulse_ms,
-                                              final_topic, sizeof(final_topic), &final_pulse_ms);
-        } else {
-            if (!dev_name[0]) {
-                if (dev_id[0]) strncpy(dev_name, dev_id, sizeof(dev_name) - 1);
-                else strncpy(dev_name, "device", sizeof(dev_name) - 1);
+        /* Button event on the bus, before any MQTT work: the first press and the release of a
+         * key (hub_rf reports a held key as "hold" repeats, which are not events) */
+        if (!req_action[0] || strcmp(req_action, "press") == 0 || strcmp(req_action, "release") == 0) {
+            cJSON *ev = cJSON_CreateObject();
+            if (ev) {
+                if (has_slot || req_source[0]) cJSON_AddNumberToObject(ev, "slot", req_slot);
+                cJSON_AddStringToObject(ev, "button", cmd_name);
+                cJSON_AddStringToObject(ev, "action", req_action[0] ? req_action : "press");
+                cJSON_AddStringToObject(ev, "source", req_source[0] ? req_source : "api");
+                if (dev_id[0]) cJSON_AddStringToObject(ev, "deviceId", dev_id);
+                if (mapped_cmd[0]) cJSON_AddStringToObject(ev, "command", mapped_cmd);
+                else if (dev_id[0] && !req_source[0]) cJSON_AddStringToObject(ev, "command", cmd_name);
+                hub_events_emit(HUB_EV_BUTTON, ev);
             }
-            mrc = mqtt_dispatch_button_pulse_topic(dev_id, dev_name, cmd_name, req_topic[0] ? req_topic : NULL, req_pulse_ms,
-                                                   final_topic, sizeof(final_topic), &final_pulse_ms);
         }
 
-        if (mrc == 0) {
-            cJSON *resp_j = cJSON_CreateObject();
-            cJSON_AddBoolToObject(resp_j, "ok", 1);
-            cJSON_AddBoolToObject(resp_j, "mirrored", 1);
-            cJSON_AddNumberToObject(resp_j, "pulseMs", final_pulse_ms);
-            cJSON_AddStringToObject(resp_j, "topic", final_topic);
-            cJSON_AddStringToObject(resp_j, "reply", "ok");
-            send_cjson_resp(client_fd, 200, resp_j);
-            cJSON_Delete(resp_j);
-        } else if (mrc == 1) {
-            cJSON *resp_j = cJSON_CreateObject();
-            cJSON_AddBoolToObject(resp_j, "ok", 1);
-            cJSON_AddBoolToObject(resp_j, "mirrored", 0);
-            cJSON_AddStringToObject(resp_j, "message", "MQTT button mirroring disabled for source");
-            send_cjson_resp(client_fd, 200, resp_j);
-            cJSON_Delete(resp_j);
-        } else {
-            send_json_error(client_fd, 503, "MQTT broker not connected");
-        }
+        /* The MQTT mirror of the old layer is gone: the bus event above reaches MQTT through
+         * the v2 sink (<base>/remote/<slot>/button) */
+        (void)req_pulse_ms;
+        (void)req_topic;
+        (void)dev_name;
+        cJSON *resp_j = cJSON_CreateObject();
+        cJSON_AddBoolToObject(resp_j, "ok", 1);
+        cJSON_AddStringToObject(resp_j, "button", cmd_name);
+        send_cjson_resp(client_fd, 200, resp_j);
+        cJSON_Delete(resp_j);
         close(client_fd);
         return 1;
     }
@@ -488,7 +528,16 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
             snprintf(fname, sizeof(fname), "remote_slot%d_map.json", slot);
             system("mkdir -p /data/harmony 2>/dev/null");
             write_file_atomic(config_store_path(fname), body);
-            notify_rf_push_config();
+            FILE *df = fopen("/data/harmony/rf_sync_pending_details.json", "w");
+            if (df) {
+                fprintf(df, "{\"slot\":%d,\"diff\":\"Remote Slot %d button mappings updated. Push settings to sync.\"}\n", slot, slot);
+                fclose(df);
+            }
+            FILE *flag = fopen("/data/harmony/rf_sync_pending.flag", "w");
+            if (flag) {
+                fprintf(flag, "%ld\n", (long)time(NULL));
+                fclose(flag);
+            }
         }
         cJSON *resp = cJSON_CreateObject();
         cJSON_AddBoolToObject(resp, "ok", 1);
@@ -534,7 +583,16 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
             system("mkdir -p /data/harmony 2>/dev/null");
             write_file_atomic(config_store_path(dst_name), content);
             free(content);
-            notify_rf_push_config();
+            FILE *df = fopen("/data/harmony/rf_sync_pending_details.json", "w");
+            if (df) {
+                fprintf(df, "{\"slot\":%d,\"diff\":\"Remote Slot %d button mappings copied from Slot %d. Push settings to sync.\"}\n", to_slot, to_slot, from_slot);
+                fclose(df);
+            }
+            FILE *flag = fopen("/data/harmony/rf_sync_pending.flag", "w");
+            if (flag) {
+                fprintf(flag, "%ld\n", (long)time(NULL));
+                fclose(flag);
+            }
             cJSON *resp = cJSON_CreateObject();
             cJSON_AddBoolToObject(resp, "ok", 1);
             cJSON_AddNumberToObject(resp, "from", from_slot);
@@ -600,6 +658,7 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
                     cJSON *bj = cJSON_Parse(buf);
                     free(buf);
                     if (bj) {
+                        bt_status_normalize(bj);
                         send_cjson_resp(client_fd, 200, bj);
                         cJSON_Delete(bj);
                         close(client_fd);
@@ -617,6 +676,9 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
         cJSON_AddBoolToObject(st, "ok", 1);
         cJSON_AddBoolToObject(st, "running", bt_running);
         cJSON_AddStringToObject(st, "state", bt_running ? "running" : "stopped");
+        cJSON_AddBoolToObject(st, "connected", 0);
+        cJSON_AddBoolToObject(st, "pairing", 0);
+        cJSON_AddItemToObject(st, "hosts", cJSON_CreateArray());
         send_cjson_resp(client_fd, 200, st);
         cJSON_Delete(st);
         close(client_fd);

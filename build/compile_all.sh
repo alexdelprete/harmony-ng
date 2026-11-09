@@ -51,19 +51,24 @@ COMPAT_SRC=""
 
 TARGET="${1:-all}"
 
+build_util() {
+    echo "[-] Building hub_util..."
+    "$CC" $CFLAGS -Ipayload/source -o "$BIN/hub_util" payload/source/hub_util.c payload/source/hub_ntp.c $COMPAT_SRC
+    for app in hub_sync sync mknod register_ehci eth_fix hub_dhcpd hub_portal hub_sntp; do
+        ln -sf hub_util "$BIN/$app"
+    done
+}
+
 build_dhcpd() {
-    echo "[-] Building hub_dhcpd..."
-    "$CC" $CFLAGS -o "$BIN/hub_dhcpd" payload/source/hub_dhcpd.c $COMPAT_SRC
+    build_util
 }
 
 build_portal() {
-    echo "[-] Building hub_portal..."
-    "$CC" $CFLAGS -o "$BIN/hub_portal" payload/source/hub_portal.c $COMPAT_SRC
+    build_util
 }
 
 build_sntp() {
-    echo "[-] Building hub_sntp..."
-    "$CC" $CFLAGS -Ipayload/source -o "$BIN/hub_sntp" payload/source/hub_sntp_main.c payload/source/hub_ntp.c $COMPAT_SRC
+    build_util
 }
 
 build_daemon() {
@@ -100,6 +105,11 @@ build_daemon() {
         payload/source/hw_action.c \
         payload/source/ws_server.c \
         payload/source/state_watch.c \
+        payload/source/hub_events.c \
+        payload/source/hub_info.c \
+        payload/source/hub_mdns.c \
+        payload/source/hub_cmd.c \
+        payload/source/mfg_id.c \
         payload/source/mqtt_client.c \
         payload/source/sha256.c \
         payload/source/timezone_db.c \
@@ -108,18 +118,15 @@ build_daemon() {
 }
 
 build_register_ehci() {
-    echo "[-] Building register_ehci..."
-    "$CC" $CFLAGS -o "$BIN/register_ehci" payload/source/register_ehci.c $COMPAT_SRC
+    build_util
 }
 
 build_eth_fix() {
-    echo "[-] Building eth_fix..."
-    "$CC" $CFLAGS -o "$BIN/eth_fix" payload/source/eth_fix.c $COMPAT_SRC
+    build_util
 }
 
 build_mknod() {
-    echo "[-] Building mknod..."
-    "$CC" $CFLAGS -o "$BIN/mknod" payload/source/mknod.c $COMPAT_SRC
+    build_util
 }
 
 
@@ -129,8 +136,7 @@ build_btstack() {
 }
 
 build_sync() {
-    echo "[-] Building hub_sync..."
-    "$CC" $CFLAGS -o "$BIN/hub_sync" payload/source/hub_sync.c $COMPAT_SRC
+    build_util
 }
 
 build_rf() {
@@ -161,7 +167,7 @@ build_remote() {
 
     mkdir -p "$REPO_ROOT/remote/bin" "$REPO_ROOT/build/output/remote"
     echo "[-] Building remote_ui (ARM)..."
-    "$ARM_CC" -static -Os -s -Wall -Ipayload/source -Ipayload/source/remote payload/source/remote/*.c payload/source/remote_stock_icons.c payload/source/timezone_db.c payload/source/cJSON.c payload/source/sha256.c payload/source/uclibc_static_locks.c -o "$REPO_ROOT/remote/bin/remote_ui" -lpthread -lm
+    "$ARM_CC" -static -Os -s -Wall -Ipayload/source -Ipayload/source/remote payload/source/remote/*.c payload/source/remote_stock_icons.c payload/source/mfg_id.c payload/source/timezone_db.c payload/source/cJSON.c payload/source/sha256.c payload/source/uclibc_static_locks.c -o "$REPO_ROOT/remote/bin/remote_ui" -lpthread -lm
     echo "[-] Building remote_sync (ARM)..."
     "$ARM_CC" -static -Os -s -Wall payload/source/hub_sync.c -o "$REPO_ROOT/remote/bin/remote_sync"
     echo "[-] Packaging remote_ui.ota.gz (binary + scripts)..."
@@ -198,6 +204,9 @@ case "$TARGET" in
         ;;
     daemon)
         build_daemon
+        ;;
+    util|hub_util)
+        build_util
         ;;
     sntp)
         build_sntp
@@ -237,31 +246,19 @@ case "$TARGET" in
         build_eth_fix
         ;;
     hub)
-        build_dhcpd
-        build_portal
-        build_sntp
+        build_util
         build_daemon
-        build_register_ehci
-        build_eth_fix
-        build_mknod
-        build_sync
         build_rf
         ;;
     all)
-        build_dhcpd
-        build_portal
-        build_sntp
+        build_util
         build_daemon
-        build_register_ehci
-        build_eth_fix
-        build_mknod
-        build_sync
         build_rf
         build_btstack
         ;;
     *)
         echo "Unknown target: $TARGET"
-        echo "Usage: $0 [all|hub|daemon|sntp|portal|dhcpd|btstack|register_ehci|eth_fix|mknod|rf|remote|apk] (elite = remote)"
+        echo "Usage: $0 [all|hub|daemon|util|sntp|portal|dhcpd|btstack|register_ehci|eth_fix|mknod|rf|remote|apk] (elite = remote)"
         exit 1
         ;;
 esac
@@ -270,13 +267,13 @@ echo "Copying binaries to build/output..."
 if [ -f "$REPO_ROOT/tools/bin/dropbearmulti_mips" ] && [ ! -f "$BIN/dropbearmulti" ]; then
     cp -f "$REPO_ROOT/tools/bin/dropbearmulti_mips" "$BIN/dropbearmulti"
 fi
-cp -f "$BIN"/hub_* "$BIN"/register_ehci "$BIN"/eth_fix "$BIN"/mknod "$BIN"/dropbearmulti "$OUT"/ 2>/dev/null || true
+cp -a "$BIN"/hub_* "$BIN"/register_ehci "$BIN"/eth_fix "$BIN"/mknod "$BIN"/sync "$BIN"/dropbearmulti "$OUT"/ 2>/dev/null || cp -f "$BIN"/hub_* "$BIN"/register_ehci "$BIN"/eth_fix "$BIN"/mknod "$BIN"/sync "$BIN"/dropbearmulti "$OUT"/ 2>/dev/null || true
 
 echo "Updating MANIFEST.txt and FILES..."
 cd "$BIN"
-file hub_btstack hub_dhcpd hub_portal hub_daemon hub_sntp hub_rf dropbearmulti register_ehci mknod > FILES 2>/dev/null || true
-ls -l hub_btstack hub_dhcpd hub_portal hub_daemon hub_sntp hub_rf dropbearmulti register_ehci mknod | sed -E 's/ [a-zA-Z0-9_-]+ [a-zA-Z0-9_-]+ / root root /' > MANIFEST.txt 2>/dev/null || true
-md5sum hub_btstack hub_dhcpd hub_portal hub_daemon hub_sntp hub_rf dropbearmulti register_ehci mknod >> MANIFEST.txt 2>/dev/null || true
+file hub_util hub_btstack hub_dhcpd hub_portal hub_daemon hub_sntp hub_rf dropbearmulti register_ehci mknod > FILES 2>/dev/null || true
+ls -l hub_util hub_btstack hub_dhcpd hub_portal hub_daemon hub_sntp hub_rf dropbearmulti register_ehci mknod | sed -E 's/ [a-zA-Z0-9_-]+ [a-zA-Z0-9_-]+ / root root /' > MANIFEST.txt 2>/dev/null || true
+md5sum hub_util hub_btstack hub_dhcpd hub_portal hub_daemon hub_sntp hub_rf dropbearmulti register_ehci mknod >> MANIFEST.txt 2>/dev/null || true
 
 echo "=== Build finished successfully! ==="
 ls -lh "$BIN"/hub_* "$BIN"/register_ehci "$BIN"/mknod 2>/dev/null || true

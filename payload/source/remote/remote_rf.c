@@ -392,10 +392,26 @@ void send_remote_config_backup_rf(void) {
     payload[19] = (uint8_t)(g_language & 0xFF);
     payload[20] = rf_theme_id(g_theme.name); /* 0 for a theme the Hub has no id for */
     payload[21] = (uint8_t)(g_home_layout + 1); /* rf_layout_name() order */
-    rf_build_frame(&f, g_remote_slot, RF_MSG_REMOTE_CONFIG_BACKUP, ++g_tx_seq, 0, payload, 22);
+    payload[22] = (uint8_t)(g_physical_nav_enabled ? 1 : 0);
+    rf_build_frame(&f, g_remote_slot, RF_MSG_REMOTE_CONFIG_BACKUP, ++g_tx_seq, 0, payload, 23);
     rf_send_frame(&f);
     printf("[*] Sent remote config backup over RF to Hub (slot %d): bright=%d touch=%d cap=%d gyro=%d rate=%d timeout=%d lang=%d\n",
            g_remote_slot, g_brightness_val, g_touch_enabled, g_cap_buttons_enabled, g_gyro_enabled, g_gyro_rate_hz, g_timeout_seconds, (int)g_language);
+}
+
+char g_remote_unit_id[32] = "";
+
+void send_unit_id_rf(void) {
+    if (g_rf_fd < 0 || !g_remote_unit_id[0]) return;
+    rf_frame_t f;
+    uint8_t payload[25] = {0};
+    size_t n = strlen(g_remote_unit_id);
+    if (n > RF_UNIT_ID_MAX) n = RF_UNIT_ID_MAX;
+    payload[0] = (uint8_t)n;
+    memcpy(payload + 1, g_remote_unit_id, n);
+    rf_build_frame(&f, g_remote_slot, RF_MSG_UNIT_ID, ++g_tx_seq, 0, payload, 1 + n);
+    rf_send_frame(&f);
+    printf("[*] Sent unit id over RF: %.*s\n", (int)n, g_remote_unit_id);
 }
 
 void send_version_report_rf(void) {
@@ -408,8 +424,10 @@ void send_version_report_rf(void) {
     payload[1] = (uint8_t)min;
     payload[2] = (uint8_t)pat;
     payload[3] = (uint8_t)g_config_version;
-    payload[4] = RF_CAP_ACT_DEVICES | RF_CAP_LONG_NAMES;
+    payload[4] = RF_CAP_ACT_DEVICES | RF_CAP_LONG_NAMES | RF_CAP_UNIT_ID;
     rf_build_frame(&f, g_remote_slot, RF_MSG_VERSION_REPORT, ++g_tx_seq, 0, payload, 5);
     rf_send_frame(&f);
     printf("[*] Sent 24h version report over RF: v%u.%u.%u (cfg=%u)\n", maj, min, pat, g_config_version);
+    /* A Hub without RF_MSG_UNIT_ID drops the frame like any unknown type: no cost */
+    send_unit_id_rf();
 }

@@ -52,8 +52,16 @@ import {
   getRawDeviceIconSvg
 } from './app_icons_ui.js';
 import { HarmonyAppRemotesRf } from './app_remotes_rf.js';
+import { copyText } from '../clipboard.js';
 
 export class HarmonyAppSettingsSystem extends HarmonyAppRemotesRf {
+  setMqttBadge(st) {
+    const badge = document.getElementById('mqttConnBadge');
+    if (!badge || !st) return;
+    badge.className = `badge ${st.connected ? 'ok' : 'bad'}`;
+    badge.textContent = st.connected ? 'Connected' : (st.enabled ? 'Disconnected' : 'Disabled');
+  }
+
   async loadMqttView() {
     const badge = document.getElementById('mqttConnBadge');
     try {
@@ -68,11 +76,11 @@ export class HarmonyAppSettingsSystem extends HarmonyAppRemotesRf {
         document.getElementById('mqttPort').value = st.config.port || 1883;
         document.getElementById('mqttUsername').value = st.config.username || '';
         document.getElementById('mqttBaseTopic').value = st.config.baseTopic || 'harmony/hub';
-        document.getElementById('mqttDiscoveryPrefix').value = st.config.discoveryPrefix || 'homeassistant';
         document.getElementById('mqttClientId').value = st.config.clientId || 'harmony_hub';
-        document.getElementById('mqttName').value = st.config.name || 'Harmony Hub';
-        document.getElementById('mqttKeepAlive').value = st.config.keepAlive || 60;
-        document.getElementById('mqttHaDiscovery').checked = Boolean(st.config.haDiscovery);
+        const discEl = document.getElementById('mqttDiscoveryPrefix');
+        if (discEl) discEl.value = st.config.discoveryPrefix || 'homeassistant';
+        const haEl = document.getElementById('mqttHaDiscovery');
+        if (haEl) haEl.checked = st.config.haDiscovery !== false;
       }
     } catch (err) {
       if (badge) badge.textContent = 'Offline';
@@ -275,7 +283,7 @@ export class HarmonyAppSettingsSystem extends HarmonyAppRemotesRf {
     if (!previewEl || !previewEl.textContent) return;
 
     try {
-      await navigator.clipboard.writeText(previewEl.textContent);
+      if (!(await copyText(previewEl.textContent))) throw new Error('clipboard unavailable');
       if (copyBtn) copyBtn.textContent = '✓ Copied!';
       if (statusEl) statusEl.innerHTML = '<span style="color:var(--success)">Copied to clipboard</span>';
       setTimeout(() => {
@@ -343,12 +351,9 @@ export class HarmonyAppSettingsSystem extends HarmonyAppRemotesRf {
       port: Number(document.getElementById('mqttPort')?.value) || 1883,
       username: document.getElementById('mqttUsername')?.value.trim(),
       password: document.getElementById('mqttPassword')?.value,
-      keep_password: document.getElementById('mqttKeepPass')?.checked ? 1 : 0,
       baseTopic: document.getElementById('mqttBaseTopic')?.value.trim(),
-      discoveryPrefix: document.getElementById('mqttDiscoveryPrefix')?.value.trim(),
       clientId: document.getElementById('mqttClientId')?.value.trim(),
-      name: document.getElementById('mqttName')?.value.trim(),
-      keepAlive: Number(document.getElementById('mqttKeepAlive')?.value) || 60,
+      discoveryPrefix: document.getElementById('mqttDiscoveryPrefix')?.value.trim() || 'homeassistant',
       haDiscovery: document.getElementById('mqttHaDiscovery')?.checked ? 1 : 0
     };
 

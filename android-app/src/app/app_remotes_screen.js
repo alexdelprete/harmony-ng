@@ -180,33 +180,6 @@ export class HarmonyAppRemotesScreen extends HarmonyAppRemotesB25 {
       }
     }
 
-    // MQTT status & config for this slot
-    try {
-      const mqRes = await this.client.getMqttStatus().catch(() => null);
-      if (mqRes && mqRes.config) {
-        const enCb = document.getElementById('remoteMqttEnabled');
-        const topIn = document.getElementById('remoteMqttTopic');
-        const badge = document.getElementById('remoteMqttStatusBadge');
-        const lbl = document.getElementById('remoteMqttLabel');
-
-        const slotEv = curSlot === 1 ?
-          (mqRes.config.slot1RemoteEvents !== undefined ? mqRes.config.slot1RemoteEvents : (mqRes.config.remoteEvents !== undefined ? mqRes.config.remoteEvents : true)) :
-          (mqRes.config.slot2RemoteEvents !== undefined ? mqRes.config.slot2RemoteEvents : false);
-        const slotTop = curSlot === 1 ?
-          (mqRes.config.slot1RemoteTopic || mqRes.config.remoteTopic || '') :
-          (mqRes.config.slot2RemoteTopic || '');
-
-        if (enCb) enCb.checked = Boolean(slotEv);
-        if (topIn) topIn.value = slotTop;
-        if (lbl) lbl.textContent = `Mirror Slot ${curSlot} (${curSlotInfo?.name || 'Remote'}) button presses to MQTT`;
-        if (badge) {
-          badge.textContent = mqRes.connected ? 'CONNECTED' : (mqRes.enabled ? 'ONLINE' : 'MQTT OFF');
-          badge.className = 'badge ' + (mqRes.connected ? 'ok' : 'subtle');
-        }
-      }
-    } catch (e) {
-      console.warn('MQTT status check failed:', e);
-    }
 
     const sel = document.getElementById('remoteActivitySelect');
     const prevActVal = this.remoteSelectedActivityId || sel?.value || '-1';
@@ -255,6 +228,12 @@ export class HarmonyAppRemotesScreen extends HarmonyAppRemotesB25 {
       this.remoteMapData = { activities: {}, devices: {} };
     }
 
+    try {
+      this.remoteConfig = await this.client.request(`/api/rf/remote-config?slot=${this.selectedRemoteSlot || 1}`).catch(() => null);
+    } catch (e) {
+      this.remoteConfig = null;
+    }
+
     // The screen preview lists devices the way the Hub's config push does: from devices.json,
     // whose command order and set differ from /api/inventory
     if (!isScreenless) {
@@ -293,6 +272,15 @@ export class HarmonyAppRemotesScreen extends HarmonyAppRemotesB25 {
   }
 
   selectRemoteButton(btnId, openModal = false) {
+    const isPhysNav = Boolean(this.remoteConfig?.physicalNavEnabled || this.remoteConfig?.physical_nav === 1 || this.remoteConfig?.physical_nav === true);
+    const physNavKeys = new Set(['Ha1', 'Ha2', 'Ha3', 'Ha4', 'RockerUp', 'RockerDown']);
+    const isReserved = isPhysNav && physNavKeys.has(btnId);
+
+    if (isReserved && openModal) {
+      showToast(`${btnId} is reserved for physical navigation on the remote.`, 'warning');
+      return;
+    }
+
     this.remoteSelectedBtn = btnId;
     document.querySelectorAll('.remote-hotspot').forEach(b => {
       b.classList.toggle('selected', b.getAttribute('data-btn') === btnId);
@@ -375,12 +363,17 @@ export class HarmonyAppRemotesScreen extends HarmonyAppRemotesB25 {
 
     const stat = document.getElementById('remoteSelectedBtnStatus');
     if (stat) {
-      const isMapped = Boolean(mapping);
-      stat.className = `badge ${isMapped ? 'ok' : 'subtle'}`;
-      stat.textContent = isMapped ? 'Mapped' : 'Unmapped';
+      if (isReserved) {
+        stat.className = 'badge warning';
+        stat.textContent = 'Reserved (Physical Nav)';
+      } else {
+        const isMapped = Boolean(mapping);
+        stat.className = `badge ${isMapped ? 'ok' : 'subtle'}`;
+        stat.textContent = isMapped ? 'Mapped' : 'Unmapped';
+      }
     }
 
-    if (openModal) {
+    if (openModal && !isReserved) {
       const m = document.getElementById('remoteBtnModal');
       if (m) m.style.display = 'flex';
     }
@@ -498,15 +491,30 @@ export class HarmonyAppRemotesScreen extends HarmonyAppRemotesB25 {
       const actId = this.remoteSelectedActivityId || document.getElementById('remoteActivitySelect')?.value || '-1';
       actMap = this.remoteMapData?.activities?.[actId] || {};
     }
+    const isPhysNav = Boolean(this.remoteConfig?.physicalNavEnabled || this.remoteConfig?.physical_nav === 1 || this.remoteConfig?.physical_nav === true);
+    const physNavKeys = new Set(['Ha1', 'Ha2', 'Ha3', 'Ha4', 'RockerUp', 'RockerDown']);
+
     document.querySelectorAll('.remote-hotspot').forEach(b => {
       const id = b.getAttribute('data-btn');
+      const isReserved = isPhysNav && physNavKeys.has(id);
       b.classList.toggle('mapped', Boolean(actMap[id]));
+      b.classList.toggle('disabled', isReserved);
+      b.classList.toggle('nav-reserved', isReserved);
+      if (isReserved) {
+        b.setAttribute('title', `${id} (Reserved for Physical Navigation)`);
+        b.setAttribute('aria-disabled', 'true');
+      }
     });
     const stat = document.getElementById('remoteSelectedBtnStatus');
     if (stat) {
-      const isMapped = Boolean(actMap[this.remoteSelectedBtn]);
-      stat.className = `badge ${isMapped ? 'ok' : 'subtle'}`;
-      stat.textContent = isMapped ? 'Mapped' : 'Unmapped';
+      if (isPhysNav && physNavKeys.has(this.remoteSelectedBtn)) {
+        stat.className = 'badge warning';
+        stat.textContent = 'Reserved (Physical Nav)';
+      } else {
+        const isMapped = Boolean(actMap[this.remoteSelectedBtn]);
+        stat.className = `badge ${isMapped ? 'ok' : 'subtle'}`;
+        stat.textContent = isMapped ? 'Mapped' : 'Unmapped';
+      }
     }
   }
 
@@ -889,29 +897,5 @@ export class HarmonyAppRemotesScreen extends HarmonyAppRemotesB25 {
     this.renderRemoteScreenButtons();
   }
 
-  async saveRFRemoteMqttSettings() {
-    const status = document.getElementById('remoteMqttSaveStatus');
-    const enabled = document.getElementById('remoteMqttEnabled')?.checked ? 1 : 0;
-    const topic = document.getElementById('remoteMqttTopic')?.value.trim() || '';
-    const slot = this.selectedRemoteSlot || 1;
-    try {
-      if (status) status.textContent = 'Saving...';
-      const payload = {};
-      if (slot === 1) {
-        payload.slot1RemoteEvents = enabled;
-        payload.slot1RemoteTopic = topic;
-        payload.remoteEvents = enabled;
-        payload.remoteTopic = topic;
-      } else {
-        payload.slot2RemoteEvents = enabled;
-        payload.slot2RemoteTopic = topic;
-      }
-      await this.client.saveMqtt(payload);
-      if (status) status.innerHTML = '<span style="color:var(--success)">Saved!</span>';
-      setTimeout(() => { if (status) status.textContent = ''; }, 3000);
-    } catch (err) {
-      if (status) status.innerHTML = `<span style="color:var(--danger)">Error: ${err.message}</span>`;
-    }
-  }
 
 }

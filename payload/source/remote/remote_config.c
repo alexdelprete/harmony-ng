@@ -445,7 +445,7 @@ void load_activities(void) {
                     snprintf(cpath, sizeof(cpath), "/data/assets/custom/%s.png", id);
                 }
                 if (fs_readable(cpath)) {
-                    strncpy(g_activities[g_activity_count].icon_path, cpath, sizeof(g_activities[0].icon_path) - 1);
+                    copy_str(g_activities[g_activity_count].icon_path, sizeof(g_activities[0].icon_path), cpath);
                 } else {
                     const char *img_key = (j_icon && j_icon->valuestring) ? j_icon->valuestring : (j_type ? j_type->valuestring : "");
                     resolve_activity_icon(0, img_key, name, g_activities[g_activity_count].icon_path, sizeof(g_activities[0].icon_path));
@@ -596,8 +596,7 @@ void load_rf_config(void) {
                 snprintf(act_id_str, sizeof(act_id_str), "%lld", (long long)jid->valuedouble);
             }
             if (act_id_str[0] && jname && cJSON_IsString(jname)) {
-                strncpy(g_rf_activities[g_rf_activity_count].id, act_id_str, sizeof(g_rf_activities[0].id) - 1);
-                g_rf_activities[g_rf_activity_count].id[sizeof(g_rf_activities[0].id) - 1] = '\0';
+                copy_str(g_rf_activities[g_rf_activity_count].id, sizeof(g_rf_activities[0].id), act_id_str);
                 strncpy(g_rf_activities[g_rf_activity_count].name, jname->valuestring, sizeof(g_rf_activities[0].name) - 1);
                 g_rf_activities[g_rf_activity_count].name[sizeof(g_rf_activities[0].name) - 1] = '\0';
                 if (jico && cJSON_IsString(jico) && jico->valuestring[0]) {
@@ -635,8 +634,7 @@ void load_rf_config(void) {
                 snprintf(dev_id_str, sizeof(dev_id_str), "%lld", (long long)jid->valuedouble);
             }
             if (dev_id_str[0] && jname && cJSON_IsString(jname)) {
-                strncpy(g_rf_devices[g_rf_device_count].id, dev_id_str, sizeof(g_rf_devices[0].id) - 1);
-                g_rf_devices[g_rf_device_count].id[sizeof(g_rf_devices[0].id) - 1] = '\0';
+                copy_str(g_rf_devices[g_rf_device_count].id, sizeof(g_rf_devices[0].id), dev_id_str);
                 strncpy(g_rf_devices[g_rf_device_count].name, jname->valuestring, sizeof(g_rf_devices[0].name) - 1);
                 g_rf_devices[g_rf_device_count].name[sizeof(g_rf_devices[0].name) - 1] = '\0';
                 cJSON *jico = cJSON_GetObjectItem(d, "icon");
@@ -736,15 +734,16 @@ static void sort_activity_list(void);
 void build_activity_list(void) {
     g_activity_count = 0;
     for (int i = 0; i < g_rf_activity_count && g_activity_count < MAX_ACTIVITIES; i++) {
-        strncpy(g_activities[g_activity_count].id, g_rf_activities[i].id, sizeof(g_activities[0].id) - 1);
+        copy_str(g_activities[g_activity_count].id, sizeof(g_activities[0].id), g_rf_activities[i].id);
         strncpy(g_activities[g_activity_count].name, g_rf_activities[i].name, sizeof(g_activities[0].name) - 1);
         char cpath[128];
-        snprintf(cpath, sizeof(cpath), "/data/assets/custom/activity_%s.png", g_rf_activities[i].id);
+        const int idlen = (int)sizeof(g_rf_activities[0].id) - 1;
+        snprintf(cpath, sizeof(cpath), "/data/assets/custom/activity_%.*s.png", idlen, g_rf_activities[i].id);
         if (!fs_readable(cpath)) {
-            snprintf(cpath, sizeof(cpath), "/data/assets/custom/%s.png", g_rf_activities[i].id);
+            snprintf(cpath, sizeof(cpath), "/data/assets/custom/%.*s.png", idlen, g_rf_activities[i].id);
         }
         if (fs_readable(cpath)) {
-            strncpy(g_activities[g_activity_count].icon_path, cpath, sizeof(g_activities[0].icon_path) - 1);
+            copy_str(g_activities[g_activity_count].icon_path, sizeof(g_activities[0].icon_path), cpath);
         } else {
             resolve_activity_icon(g_rf_activities[i].icon_id,
                                   g_rf_activities[i].icon,
@@ -868,6 +867,7 @@ void load_settings_conf(void) {
         if (sscanf(line, "%63[^=]=%63[^\n\r]", key, sval) == 2) {
             int val = atoi(sval);
             if (strcmp(key, "touch") == 0) g_touch_enabled = (val != 0);
+            else if (strcmp(key, "physical_nav") == 0 || strcmp(key, "screen_nav_mode") == 0) g_physical_nav_enabled = (val != 0);
             else if (strcmp(key, "cap_buttons") == 0 || strcmp(key, "capacitive_buttons") == 0) g_cap_buttons_enabled = (val != 0);
             else if (strcmp(key, "touch_sens") == 0) g_touch_sensitivity = (val >= 1 && val <= 3) ? val : 2;
             else if (strcmp(key, "gyro") == 0) g_gyro_enabled = (val != 0);
@@ -917,6 +917,7 @@ void save_settings_conf(void) {
     FILE *f = fopen(SETTINGS_CONFIG_FILE, "w");
     if (!f) return;
     fprintf(f, "touch=%d\n", g_touch_enabled ? 1 : 0);
+    fprintf(f, "physical_nav=%d\n", g_physical_nav_enabled ? 1 : 0);
     fprintf(f, "cap_buttons=%d\n", g_cap_buttons_enabled ? 1 : 0);
     fprintf(f, "touch_sens=%d\n", g_touch_sensitivity);
     fprintf(f, "gyro=%d\n", g_gyro_enabled ? 1 : 0);

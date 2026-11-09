@@ -19,13 +19,20 @@ Returns service status.
 
 ### 1.2 Full Hub Status
 #### `GET /api/status`
-Returns high-level hub status, firmware, active activity, memory, uptime, and MQTT connection status.
+Returns high-level hub status, firmware, identity, active activity, memory, uptime, and MQTT connection status.
 - **Response `200 OK`**:
   ```json
   {
     "ok": true,
     "hub_name": "Living Room Hub",
     "firmware": "4.15.600",
+    "hub_id": "20140101120000-000001",
+    "version": "2.2.0",
+    "commit": "abc1234",
+    "api_version": 2,
+    "capabilities": ["events", "snapshot", "ws_auth", "ws_keepalive", "ir_raw", "rf_wake"],
+    "legacy_enabled": false,
+    "mdns_enabled": false,
     "activity": "123456",
     "state": 2,
     "busy": false,
@@ -35,12 +42,24 @@ Returns high-level hub status, firmware, active activity, memory, uptime, and MQ
     "uptime_sec": 34821,
     "mqtt": {
       "connected": true,
-      "host": "192.168.1.50",
+      "broker": "192.168.1.50",
       "port": 1883,
-      "base_topic": "harmony/hub"
+      "baseTopic": "harmony/hub",
+      "v2": true
     }
   }
   ```
+  - `firmware`: the Logitech base firmware. `version` and `commit`: this firmware, as in `/api/system-info`.
+  - `hub_id`: the factory unit id from the `mfg` partition (unique per unit, survives reflashes); the
+    identifier for device registries and unique ids. Falls back to the Wi-Fi MAC (12 lowercase hex
+    characters, logged as a warning) only when the partition has no unit id.
+  - `api_version`: `2` from milestone 1 of the integration work on; it changes only on a breaking
+    change to an existing endpoint or message. Additions are announced through `capabilities`.
+  - `capabilities`: flags of the features compiled into this firmware, independent of settings:
+    `events` (event bus, pushed WebSocket messages 10.8 to 10.13), `snapshot` (10.14), `ws_auth`
+    (11.4), `ws_keepalive` (10.15), `ir_raw` (5.4), `rf_wake` (`POST /api/rf/wake`).
+  - `legacy_enabled`, `mdns_enabled`: mirror the settings of the Logitech protocol shim and the mDNS
+    responder; `false` while those features do not exist.
 
 ### 1.3 System Info
 #### `GET /api/system-info`
@@ -165,9 +184,12 @@ Returns global hub settings from `/data/harmony/config/settings.json`.
     "dry_run": false,
     "ntp_server": "pool.ntp.org",
     "timezone": "Europe/Amsterdam",
-    "led_mode": "green"
+    "led_mode": "green",
+    "mdns_enabled": true
   }
   ```
+  - `mdns_enabled` (default `true`): the mDNS responder (1.11). Changing it starts or stops the
+    responder at once.
 
 #### `POST /api/settings`
 Updates global hub settings.
@@ -219,6 +241,31 @@ Executes system maintenance operations.
   ```
 
 ---
+
+### 1.11 Discovery (mDNS / DNS-SD)
+The Hub advertises itself as `_harmony-ng._tcp.local.` on port 8089 (capability flag `mdns`,
+setting `mdns_enabled`), so Home Assistant and `avahi-browse -r _harmony-ng._tcp` find it without
+an address. The responder runs inside `hub_daemon` on UDP 5353 (multicast group 224.0.0.251,
+unicast replies when the query asks for them); it probes for its names before announcing, announces
+twice at start, re-announces on an IP change (polled every 10 s) and on a change of any TXT value,
+and sends a goodbye (TTL 0) on a clean stop.
+- Instance name: `hub_name` with characters outside `[A-Za-z0-9 _-]` replaced by `-`
+  (`Harmony Hub` when empty); on a name conflict the hub id is appended. Consumers identify a Hub
+  by the TXT `id`, never by the instance name or hostname.
+- Hostname: `harmony-ng-<hub_id>.local.` with an A record for the active interface (no AAAA).
+- TTLs: 120 s for A and SRV, 4500 s for PTR and TXT. Known-answer suppression for the PTR.
+- TXT record, keys in this order:
+
+  | Key | Value |
+  | --- | --- |
+  | `id` | `hub_id` (factory unit id) |
+  | `ver` | firmware version (`HARMONY_VERSION`) |
+  | `api` | `api_version` (2) |
+  | `auth` | `1` when authentication is enabled |
+  | `mqtt` | `1` when the MQTT client is configured |
+  | `topic` | MQTT base topic, only when `mqtt=1` |
+  | `legacy` | `1` when the Logitech protocol shim is enabled (milestone 4; `0` until then) |
+  | `name` | raw `hub_name`, for display |
 
 ## 2. Firmware & OTA Updates
 
@@ -384,26 +431,15 @@ Deletes a command by name from a device.
 - **Response `200 OK`**: `{"ok": true}`
 
 ### 3.8 Device MQTT Test
+Publishes the MQTT pulse of a device once, the way a command to an MQTT-type device does (8.1,
+"MQTT-type devices"): `"1"` on the resolved topic, then `"0"` after the pulse.
+
 #### `POST /api/device-mqtt-test`
-Tests device MQTT command routing without running full sequences.
-- **Request Body**:
-  ```json
-  {
-    "deviceId": "70321456",
-    "command": "PowerToggle",
-    "topic": "home/livingroom/tv",
-    "pulseMs": 500
-  }
-  ```
-- **Response `200 OK`**:
-  ```json
-  {
-    "ok": true,
-    "pulseMs": 500,
-    "topic": "home/livingroom/tv/command",
-    "message": "MQTT test publish sent"
-  }
-  ```
+- **Request Body**: `{"deviceId": "3", "device": "Plug", "command": "PowerToggle", "topic": "{base_topic}/button/{device}/{command}", "pulseMs": 1000}`.
+  `topic` and `pulseMs` override the device's `mqttTopic` and `mqttPulseMs`; `command` defaults to
+  `PowerToggle`.
+- **Response `200 OK`**: `{"ok": true, "topic": "harmony/hub/button/Plug/PowerToggle", "pulseMs": 1000, "message": "MQTT test publish sent"}`.
+- **Response `503`**: MQTT is disabled or the broker is not connected.
 
 ---
 
@@ -607,9 +643,30 @@ Dedicated blaster endpoint for raw Pronto hex code streams.
   ```
 - **Response `200 OK`**: `{"success": true}`
 
+### 5.2a IR Learning (capture)
+#### `POST /api/capture`
+Listens on the Hub's IR receiver until a signal arrives or the timeout ends, then returns one frame as a Harmony raw timing string (`F<carrier hex>P<pulse us hex>S<space us hex>...`, the carrier measured, the last space the gap to the next frame). The string can be stored as a command's `raw` (`POST /ir/command`) and sent like any other keycode. The sensor is short-range: hold the original remote about 8 cm from the Hub and hold the button for 1 to 2 seconds (the first frame of a press is often cut, so the decoder keeps the first complete frame after it).
+- **Request Body** (optional): `{"timeout": 10}` in seconds, 1 to 30 (default 10). `?timeout=` works too.
+- **Response `200 OK`**:
+  ```json
+  {"ok": true, "raw": "F9470P...S...", "keycode": "F9470P...S...", "mode": "raw", "carrier_hz": 38000, "pulses": 26, "duration_us": 24000}
+  ```
+  `pulses` is the number of timing intervals in `raw`, marks and spaces together (`P` and `S` entries); `duration_us` is their sum.
+- **Errors**: `408` no signal before the timeout, or only a flash that is not a code, `409` another capture is running or an IR send holds the hardware, `503` no IR receiver, or the receiver stopped delivering data (the capture gives up after 2 s without data instead of hanging; a reboot clears a stuck receiver), `500` other failures.
+
+#### `POST /api/ir-test-learned`
+Sends a captured code once through the IR ports of a device (its `controlPort`, default all).
+- **Request Body**: `{"deviceId": "3", "keycode": "F9470P...S..."}` (`raw` or `code` are accepted for `keycode`).
+- **Response `200 OK`**: `{"ok": true, "port": 7}`
+- **Errors**: `400` missing code or a code the IR encoder does not understand, `500` transmit failure.
+
 ### 5.3 Button Press & MQTT Dispatch
 #### `POST /api/button-press` or `POST /api/mqtt-publish`
-Dispatches a button press pulse to local MQTT broker and hardware handlers.
+Reports a physical key. Every call gives a `button` event on the WebSocket (10.13) and on MQTT
+(`<base>/remote/<slot>/button`, 8.1) for `action` `press` (the default) and `release`; `hold`
+repeats give nothing (they are sent to the device by `hub_rf` itself). `hub_rf` posts physical keys as `{"button": <key name>,
+"action", "source": "remote_rf", "slot"}` plus `deviceId` and `command` when the key was mapped to
+a device command; other callers may keep posting the key as `command`.
 - **Request Body**:
   ```json
   {
@@ -618,35 +675,65 @@ Dispatches a button press pulse to local MQTT broker and hardware handlers.
     "pulseMs": 100
   }
   ```
-- **Response `200 OK`**:
-  ```json
-  {
-    "ok": true,
-    "pulseMs": 100,
-    "topic": "harmony/hub/button/70321456/VolumeUp",
-    "reply": "ok"
-  }
-  ```
+- **Response `200 OK`**: `{"ok": true, "button": "VolumeUp"}` (the MQTT pulse topics of the old
+  layer are gone, see 8.1).
 
 ---
+
+### 5.4 Raw Infrared
+#### `POST /api/ir-raw`
+Sends a raw infrared frame given as carrier and microsecond timings (what an IR receiver or
+Home Assistant's `infrared` platform produces). Capability flag: `ir_raw`.
+- **Request Body** (`Content-Type: application/json`, up to 2048 timings):
+  ```json
+  {"frequency": 38000, "timings": [9000, -4500, 560, -560, 560, -1690], "port": 1, "repeats": 1}
+  ```
+  - `frequency`: carrier in Hz, `0` for unmodulated, otherwise 20000 to 60000. Default 38000.
+  - `timings`: microseconds, 2 to 2048 values, each 1 to 65535 in absolute value. Either signed
+    (positive mark, negative space, alternating) or all positive alternating mark/space starting
+    with a mark. Mark/space pairs ending with the gap after the frame are the usual form; an odd
+    count (ending with a mark) is accepted and the Hub adds 40 ms of silence after the last mark
+    (not counted in `duration_ms`).
+  - `port`: bitmask as `/api/ir-send` (`1` front blaster, `2` jack 1, `4` jack 2, `7` all). Default 7.
+  - `repeats`: 1 to 10, default 1.
+- **Response `200 OK`**: `{"ok": true, "count": 6, "duration_ms": 17}` (`duration_ms` = sum of the
+  timings times `repeats`).
+- **Error `400`**: `{"ok": false, "error": "<field>: ..."}` naming the offending field.
+- **Error `409`**: `{"ok": false, "error": "busy"}` while another IR transmission holds the I2S
+  blaster (the same lock the orchestrator and `/api/ir-send` take).
+- Nothing of the frame is logged.
 
 ## 6. Bluetooth Stack & HID
 
 ### 6.1 Bluetooth Status
 #### `GET /api/bt-status`
-Returns connection status, BTstack daemon state, paired hosts, and active target.
+Returns `hub_btstack`'s status (`/tmp/hub_btstack_status.json`) with four fields `hub_daemon` adds:
+`ok`, `running` (the `hub_btstack` process is alive), `connected` (any host connected) and
+`pairing` (pairing mode on). `hosts` lists every paired host with its address (`addr`), name,
+`connected`, `paired` and `cid`; `host` is the host keys go to. `target` and `remote` are the
+Bluetooth LE remote, not a host; `state` is that link's state.
 - **Response `200 OK`**:
   ```json
   {
+    "backend": "btstack",
+    "pid": 1234,
+    "state": "connecting",
+    "target": "11:22:33:44:55:66",
+    "last_button": "",
+    "last_seen": 0,
+    "remote": {"connected": true, "addr": "11:22:33:44:55:66"},
+    "host": {"connected": true, "addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "pairing": false},
+    "hosts": [
+      {"addr": "AA:BB:CC:DD:EE:01", "name": "Television", "connected": false, "paired": true, "cid": 2},
+      {"addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "connected": true, "paired": true, "cid": 6}
+    ],
     "ok": true,
     "running": true,
     "connected": true,
-    "target": "AA:BB:CC:DD:EE:FF",
-    "devices": [
-      {"bdaddr": "AA:BB:CC:DD:EE:FF", "name": "Apple TV"}
-    ]
+    "pairing": false
   }
   ```
+  Without a status file (`hub_btstack` not started): `{"ok": true, "running": false, "state": "stopped", "connected": false, "pairing": false, "hosts": []}`.
 
 ### 6.2 Host Pairing Mode
 #### `POST /api/bt-pairing`
@@ -761,6 +848,16 @@ Returns CC2544 radio state, paired remote slots, model identification, screen ca
   }
   ```
 - `slots[].link`: RF traffic with the remote since `hub_rf` started: protocol frames received, frames sent that wait for an ACK (resends included) and how many were ACKed, resends, sends the Hub's CC2544 refused (NAK), and seconds since the last frame from the remote (`-1` before the first).
+
+- `slots[].remote_id`: the remote's factory unit id (its `mfg` partition, `RF_MSG_UNIT_ID`),
+  present once the remote reported it since pairing. The identifier for the remote's device in
+  integrations; the slot number is only an attribute. Cleared on unpair.
+
+#### `POST /api/rf/status-changed` (internal)
+`hub_rf` posts the object above to this endpoint whenever it changed (once a second at most; the
+`link` counters and `battery.voltage_mv` are not changes). The daemon turns it into an `rf_status`
+WebSocket event (10.12). Accepted from loopback only (`403` otherwise); the body must be the status
+object (`400` otherwise). Reply: `{"ok": true, "changed": true|false}`.
 
 ### 7.2 RF Pairing
 #### `GET /api/rf/pair?slot={1|2}` or `POST /api/rf/pair`
@@ -881,10 +978,17 @@ Saves virtual remote keypad layout for WebUI and Android App.
 
 ## 8. Network & Broker Configuration
 
-### 8.1 MQTT Settings
+### 8.1 MQTT (v2)
+The MQTT layer carries the same information as the WebSocket (section 10): every state change is
+published on change, retained where it is state, never on a timer; commands are acknowledged.
+Capability flag `mqtt_v2`; `GET /api/mqtt-status` and the `mqtt` member of `/api/status` carry
+`"v2": true`. On the first start of this firmware the old state topics get an empty retained
+payload once, so brokers drop them (marker `/data/harmony/mqtt_v2_migrated`). The Home Assistant
+discovery entities, the inbound command topics of the first MQTT layer and the pulse of MQTT-type
+devices are kept (below).
+
 #### `POST /api/mqtt-save` or `POST /mqtt`
-Configures hub MQTT broker credentials, port, base topic, and per-slot remote button event mirroring.
-- **Request Body**:
+- **Request Body** (every field optional; `password` is kept when absent or empty):
   ```json
   {
     "enabled": true,
@@ -894,16 +998,119 @@ Configures hub MQTT broker credentials, port, base topic, and per-slot remote bu
     "password": "password",
     "baseTopic": "harmony/hub",
     "clientId": "harmony_hub",
-    "slot1RemoteEvents": true,
-    "slot1RemoteTopic": "harmony/hub/remote/1/events",
-    "slot2RemoteEvents": false,
-    "slot2RemoteTopic": "harmony/hub/remote/2/events"
+    "discoveryPrefix": "homeassistant",
+    "haDiscovery": true
   }
   ```
-- **Response `200 OK`**: `{"ok": true}`
+  `haDiscovery` (default true) publishes the Home Assistant discovery entities under
+  `discoveryPrefix`; turning it off clears them. The fields of the old layer with no v2 equivalent
+  (`name`, `keepAlive`, `btRemoteEvents`/`Topic`, `remoteEvents`/`Topic`,
+  `slotNRemoteEvents`/`Topic`) are ignored and removed from the stored file: button events are
+  always published on `<base>/remote/<slot>/button`.
+- **Response `200 OK`**: `{"ok": true, "message": "MQTT settings saved"}`; the client reconnects.
 
 #### `GET /api/mqtt-status`
-Queries current MQTT connection state and parameters.
+`{"ok": true, "connected": true, "broker": "...", "port": 1883, "baseTopic": "harmony/hub", "v2": true, "config": {...}}`
+
+#### Topics
+`<base>` is `baseTopic` (default `harmony/hub`). Payloads are JSON objects with `type`, `seq` and
+`ts` as on the WebSocket (10.8 to 10.13), except `status`.
+
+| Topic | Retained | QoS | Payload |
+| --- | --- | --- | --- |
+| `<base>/status` | yes | 1 | `online` / `offline` (last will) |
+| `<base>/hub` | yes | 1 | `{"type":"hub", ...}`: the `hub` object of the snapshot (10.14) plus `ip`, `device_count` and `command_count` |
+| `<base>/activity_state` | yes | 1 | `activity_state` (10.8) |
+| `<base>/progress` | no | 0 | `activity_progress` (10.9) |
+| `<base>/bt` | yes | 1 | `bt_status` (10.11) |
+| `<base>/rf` | yes | 1 | `rf_status` (10.12) |
+| `<base>/config` | yes | 1 | `{"type":"config","files":{mtimes},"inventory_version":"<8 hex>","ts"}` |
+| `<base>/inventory/index` | yes | 1 | `{"type":"inventory_index","inventory_version","devices":[{"id","name","deviceType","manufacturer","model"}],"activities":[{"id","name","activityType","order"}]}` |
+| `<base>/inventory/<deviceId>` | yes | 1 | `{"type":"inventory_device","id","name","deviceType","manufacturer","model","controlPort","commands":["PowerToggle", ...]}` (names only); split into `<deviceId>/<n>` with `part`/`parts` when a device does not fit one packet |
+| `<base>/remote/<slot>/button` | no | 1 | `button` (10.13); events without a slot go to `<base>/button` |
+| `<base>/cmd` | in | 1 | command request (below) |
+| `<base>/cmd/response` | no | 1 | command reply (below) |
+| `<base>/ir/raw` | in | 1 | the body of `POST /api/ir-raw` (5.4), optional `id` for a reply |
+
+`inventory_version` is the first 8 hex digits of the SHA-256 over the device and activity files. A
+device chunk is republished only when its own content changed, a removed device gets an empty
+retained payload, and the index is published last. Retained topics are republished on every
+(re)connect from the bus's last payloads. While the broker is down events are dropped (nothing is
+queued) and the retained state is resent on reconnect.
+
+The old state topics `<base>/state`, `<base>/activity`, `<base>/current_activity`,
+`<base>/activity_id`, `<base>/activity/status` and the remote pulse topics (`remotes/slotN/Cmd`,
+the per-remote custom topics) are gone: read `activity_state`, `hub`, `inventory/index` and
+`remote/<slot>/button` instead.
+
+#### Inbound topics of the first MQTT layer (kept)
+These are aliases of the command channel for existing automations and for the discovery buttons:
+
+| Topic | Payload | Does |
+| --- | --- | --- |
+| `<base>/activity/set` | an activity name, an activity id, `PowerOff` or `-1` | `start_activity` / `stop_activity` |
+| `<base>/send_command` | `{"device": "<name>"` or `"deviceId": "<id>", "command": "<cmd>"` or `"commands": [...]`, optional `repeats`, `delay` (s) or `delay_ms`, `hold` (s) or `hold_ms`, `action`}` | the commands in order, `repeats` times, `delay` apart (0.25 s default for more than one) |
+| `<base>/command/<device>/<command>` | any | one command to the device (id or name) |
+| `<base>/sync` | any | republishes every retained topic and the discovery entities |
+| `<base>/remote/<n>/sleep`, `<base>/remote/sleep` (slot 1) | any | `rf_sleep` |
+| `harmony/ir/pronto` | a Pronto hex code | sends it on every IR port once |
+
+They answer nothing on `cmd/response`; use `<base>/cmd` for acknowledged commands.
+
+#### MQTT-type devices
+A device of type `MQTT` (or with `mqttEnabled`) is driven through the broker instead of IR or
+Bluetooth: a command to it (an activity sequence, `POST /api/ir-send`, the remote, the command
+channel) publishes `"1"` on its topic, then `"0"` after `mqttPulseMs` (default 1000), and raises the
+`button` event (10.13) as well. The topic comes from the device's `mqttTopic` template
+(default `{base_topic}/button/{device}/{command}`; placeholders `{base_topic}` or `{root}`,
+`{device}` or `{device_id}`, `{command}` or `{button}`; a template starting with `/` is appended to
+the base topic). `POST /api/device-save` stores `mqttTopic` and `mqttPulseMs`;
+`POST /api/device-mqtt-test` (3.8) publishes one pulse.
+
+#### Home Assistant discovery
+With `haDiscovery` on, the Hub publishes retained discovery configs under
+`<discoveryPrefix>/<component>/<ident>_<object>/config` (`ident` = the client id, lower case) on
+every connect, on Home Assistant's birth message (`<discoveryPrefix>/status` = `online`), on
+`<base>/sync` and whenever the configuration changes; turning `haDiscovery` off publishes empty
+payloads to the same topics. The object ids are those of the first MQTT layer, so entities created
+before v2 are kept. All entities belong to one device (identifiers: `ident` and
+`harmony-ng-<hub_id>`, name = the hub name, `configuration_url` = the web UI) and use
+`<base>/status` for availability:
+
+| Entity | Reads | Writes |
+| --- | --- | --- |
+| select `Activity` (options `PowerOff` and the activity names) | `activity_state.activity`, mapped to the name in the template | `<base>/activity/set` |
+| sensor `Activity ID` (diagnostic) | `activity_state.activity` | |
+| sensor `IP Address` (diagnostic, attributes = the `hub` object) | `hub.ip` | |
+| sensor `Firmware` (diagnostic) | `hub.version` | |
+| sensor `IR Devices`, `IR Commands` (diagnostic) | `hub.device_count`, `hub.command_count` | |
+| button `Power Off` | | `<base>/activity/set` = `PowerOff` |
+| button `Sync` (config) | | `<base>/sync` |
+| button `Remote 1 Sleep`, `Remote 2 Sleep` (config) | | `<base>/remote/<n>/sleep` |
+
+The harmony-ng Home Assistant integration does not use these entities; they are for installations
+that drive the Hub through the MQTT integration only.
+
+#### Command channel
+Publish to `<base>/cmd`:
+```json
+{"id": "c7d1", "action": "start_activity", "activity": "123456"}
+```
+`id` is an opaque client string (up to 64 characters), echoed in the reply; a request without `id`
+is executed and not answered. Actions and fields mirror the WebSocket actions (section 10):
+`ping`, `get_state`, `get_snapshot` (the reply carries the snapshot), `start_activity` (`activity`),
+`stop_activity`, `cancel_activity`, `send_command` (`deviceId`, `command`, `status` = `press`,
+`hold`, `release` or omitted for a tap), `bt_key` (`key`, `keyAction`, `target`), `bt_text`,
+`bt_mouse`, `rf_wake` (`slot`), `rf_sleep` (`slot`), `sync`, `ir_raw` (fields of 5.4).
+
+Reply on `<base>/cmd/response`:
+```json
+{"type": "cmd_response", "id": "c7d1", "action": "start_activity", "ok": true}
+{"type": "cmd_response", "id": "c7d1", "action": "start_activity", "ok": false, "code": 409, "error": "busy"}
+{"type": "cmd_response", "id": "c7d2", "action": "get_state", "ok": true, "activity_state": {...}}
+```
+Codes and errors equal the REST ones (400 bad input, 409 busy, 503 a service is not running).
+Malformed JSON is answered with `code` 400 when an `id` can be recovered, otherwise logged.
 
 ### 8.2 Wi-Fi Scanning & Configuration
 #### `GET /api/wifi-scan`
@@ -1055,6 +1262,16 @@ Connect via WebSocket to `ws://<hub_ip>:8089/ws` or `ws://<hub_ip>/ws`.
 }
 ```
 
+#### 10.8a Full State Snapshot
+```json
+{
+  "action": "get_snapshot",
+  "msgId": 8
+}
+```
+**Response**: a `snapshot` message (10.14) with the same `msgId`. One is also sent, without
+`msgId`, as the first frame after the upgrade.
+
 #### 10.3 Send Device Command
 ```json
 {
@@ -1147,6 +1364,133 @@ Connect via WebSocket to `ws://<hub_ip>:8089/ws` or `ws://<hub_ip>/ws`.
 }
 ```
 
+### Server-to-Client Messages (pushed events)
+
+Every state change the Hub knows about goes through its event bus and is pushed to every
+WebSocket client as one text frame. Each pushed message carries `type`, `seq` (sequence number,
+from 1 per daemon run, increasing across all types) and `ts` (Unix seconds). Nothing is replayed to
+a client that connects later: it fetches the current state over REST (or the `snapshot`, see
+10.10). A client that fails a send is dropped.
+
+#### 10.8 Activity State
+Sent on every change of the orchestrator state or of the current activity, including cancel and
+dry runs, and once at daemon start. Same shape as the `get_state` reply and `GET /api/activity`.
+```json
+{
+  "type": "activity_state",
+  "seq": 17,
+  "ts": 1762387200,
+  "activity": "123456",
+  "state": 2,
+  "stateName": "running",
+  "busy": false,
+  "sending": true
+}
+```
+- `state`: `0` idle, `1` starting, `2` running, `3` stopping; `stateName` is the same as a word.
+- `activity` is `"-1"` when idle; while starting it is still the previous activity.
+
+#### 10.9 Activity Progress
+One frame per executed step of an activity switch (unchanged shape, now carrying `seq` and `ts`).
+```json
+{
+  "type": "activity_progress",
+  "seq": 18,
+  "ts": 1762387200,
+  "activity": "123456",
+  "activityId": "123456",
+  "state": "starting",
+  "stateCode": 1,
+  "step": 2,
+  "currentStep": 2,
+  "total": 6,
+  "totalSteps": 6,
+  "desc": "TV PowerOn",
+  "stepDesc": "TV PowerOn"
+}
+```
+
+#### 10.10 Configuration Changed
+Sent when a configuration file changed on disk (checked once a second by mtime and size):
+`devices`, `activities`, `settings` or `remote_map` (either slot's button map). Reload the
+affected inventory over REST.
+```json
+{"type": "config_changed", "seq": 19, "ts": 1762387200, "files": ["devices"]}
+```
+
+#### 10.11 Bluetooth Status
+The `GET /api/bt-status` object (section 6.1), sent when it changes (`last_button`, `last_seen` and
+`updated` do not count as a change; `running` turning false when `hub_btstack` dies does).
+```json
+{"type": "bt_status", "seq": 20, "ts": 1762387200, "ok": true, "running": true, "connected": true, "pairing": false, "host": {...}, "hosts": [{"addr": "AA:BB:CC:DD:EE:FF", "name": "Media Player", "connected": true, "paired": true, "cid": 6}], "...": "..."}
+```
+
+#### 10.12 RF Remote Status
+The `GET /api/rf/status` object (section 7.1), sent when it changes (the `link` counters and
+`battery.voltage_mv` do not count as a change, but are included).
+```json
+{"type": "rf_status", "seq": 21, "ts": 1762387200, "ok": true, "slots": [ ... ]}
+```
+
+#### 10.13 Remote Button
+One event for the first press and one for the release of a physical key on an RF remote (held
+keys repeat on the Hub but give no further events). `button` is the key name as the remote's
+keymap knows it; `deviceId` and `command` are the device command the key was mapped to in the
+current activity, absent when the key was not mapped to a device command. Calls of
+`POST /api/button-press` from other sources give the same event with `source` `"api"`.
+```json
+{
+  "type": "button",
+  "seq": 22,
+  "ts": 1762387200,
+  "slot": 1,
+  "button": "VolumeUp",
+  "action": "press",
+  "source": "remote_rf",
+  "deviceId": "70321456",
+  "command": "VolumeUp"
+}
+```
+
+#### 10.13a MQTT Status
+The broker connection state, pushed when hub_daemon starts, when the client connects or loses the
+broker, and after `POST /api/mqtt-save`. `broker` is empty while MQTT is disabled. Both web UIs
+update the MQTT page's badge from it.
+```json
+{"type": "mqtt_status", "seq": 23, "ts": 1762387200, "enabled": true, "connected": true,
+ "broker": "192.168.1.50", "port": 1883, "baseTopic": "harmony/hub", "haDiscovery": true}
+```
+
+#### 10.14 Snapshot
+The first frame a client receives after the upgrade, and the reply to `get_snapshot` (10.8a).
+`activity_state`, `bt_status`, `rf_status` and `mqtt_status` are the last payloads pushed for those types
+(`null` before the first one; `activity_state` is built from the orchestrator if needed).
+`config.files` holds the mtimes (Unix seconds) the watcher tracks, so a client can tell whether its
+cached inventory is stale. `seq` is the bus sequence at the time of the snapshot: a client that
+stored the last `seq` it processed can tell whether it missed events while disconnected and
+refetch over REST. The frame can exceed 4 KB (outbound frames may be up to 64 KB).
+```json
+{
+  "type": "snapshot",
+  "msgId": 8,
+  "hub": {"hub_id": "20140101120000-000001", "hub_name": "Living Room Hub", "version": "2.2.0",
+          "api_version": 2, "capabilities": ["events", "snapshot", "ws_auth", "ws_keepalive", "ir_raw", "rf_wake"],
+          "auth_enabled": false, "uptime_sec": 34821, "legacy_enabled": false, "mdns_enabled": false},
+  "activity_state": {"type": "activity_state", "activity": "-1", "state": 0, "stateName": "idle", "busy": false, "sending": false, "seq": 3, "ts": 1762387100},
+  "bt_status": {"type": "bt_status", "seq": 20, "ts": 1762387200, "...": "..."},
+  "rf_status": {"type": "rf_status", "seq": 21, "ts": 1762387200, "...": "..."},
+  "mqtt_status": {"type": "mqtt_status", "seq": 23, "ts": 1762387200, "enabled": true, "connected": true, "...": "..."},
+  "config": {"files": {"devices": 1762387000, "activities": 1762387000, "settings": 1762380000, "remote_map": 1762387000}},
+  "seq": 42,
+  "ts": 1762387200
+}
+```
+
+#### 10.15 Keepalive
+The server sends a WebSocket ping to a client that has sent nothing for 30 s; a client that
+answers nothing (pong or any other frame) within 10 s of the ping is closed. Client pings are
+still answered with pongs. Capability flag: `ws_keepalive`.
+
 ---
 
 ## 11. Authentication & Security Architecture
@@ -1204,6 +1548,22 @@ curl -X DELETE -H "Authorization: Bearer hht_..." "http://192.168.1.1:8089/api/a
 ```
 
 ### 11.4 WebSocket Token Authentication
-Connect with token in query string:
-`ws://192.168.1.1:8089/?token=pat_3f8a9b...`
+When authentication is enabled, the WebSocket upgrade (`GET /ws`) must carry a token: either
+`Authorization: Bearer <token>` or, since browsers cannot set headers on a WebSocket, `?token=<token>`
+in the request line:
+`ws://192.168.1.1:8089/ws?token=pat_3f8a9b...`
+
+- Personal access tokens (`pat_...`, 11.3) and session tokens (`hht_...`, 11.2) are both accepted.
+  Digest and Basic credentials are not supported on the upgrade.
+- Missing, unknown or revoked token: `401 Unauthorized` with the usual challenge; the connection is
+  closed, never upgraded. Callers on the Hub itself (`127.0.0.1`, `::1`: `hub_rf`, `hub_btstack`)
+  need no token, as for every request. With authentication disabled nothing changes.
+- The role of the token is kept for the connection. A `user` role receives every pushed message
+  and may send `ping`, `get_state` and `get_snapshot`; its command actions follow the same
+  permission table as the REST equivalents (`send_command` = `/api/ir-send`, `start_activity` =
+  `/api/activity`, `stop_activity` = `/api/poweroff`, `cancel_activity` = `/api/activity-cancel`,
+  `bt_key`, `bt_text`, `bt_mouse` = their endpoints). A refused action is answered with
+  `{"type": "ack", "action": ..., "ok": false, "error": "Forbidden: Admin access required"}`.
+- Both web UIs pass their session token as `?token=` when they open the WebSocket.
+- Capability flag: `ws_auth`.
 

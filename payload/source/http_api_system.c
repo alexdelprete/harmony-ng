@@ -1,4 +1,6 @@
 #include "http_api_system.h"
+#include "hub_info.h"
+#include "hub_mdns.h"
 #include "http_util.h"
 #include "http_auth.h"
 #include "http_api_custom_icons.h"
@@ -53,6 +55,7 @@ static void get_cache_space_kb(uint64_t *total_kb, uint64_t *free_kb) {
 
 void apply_hub_settings(const struct hub_settings *s) {
     if (!s) return;
+    hub_mdns_apply_settings(s);
     hub_led_write(hub_led_mode_value(s->led_mode));
     if (s->timezone[0]) {
         char posix_tz[64];
@@ -87,6 +90,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         config_store_get_settings(&cs);
         cJSON_AddStringToObject(st, "hub_name", cs.hub_name[0] ? cs.hub_name : "Harmony Hub");
         cJSON_AddStringToObject(st, "firmware", "4.15.600");
+        hub_info_add_status_fields(st, &cs);
         cJSON_AddStringToObject(st, "activity", orch_get_current_activity());
         cJSON_AddNumberToObject(st, "state", (int)orch_get_state());
         cJSON_AddBoolToObject(st, "busy", orch_is_busy() ? 1 : 0);
@@ -127,6 +131,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         cJSON_AddStringToObject(mj, "broker", mhost);
         cJSON_AddNumberToObject(mj, "port", mport);
         cJSON_AddStringToObject(mj, "baseTopic", mbase);
+        cJSON_AddBoolToObject(mj, "v2", 1);
         cJSON_AddItemToObject(st, "mqtt", mj);
 
         http_ensure_icons_extracted();
@@ -169,6 +174,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         cJSON_AddStringToObject(resp, "broker", mhost);
         cJSON_AddNumberToObject(resp, "port", mport);
         cJSON_AddStringToObject(resp, "baseTopic", mbase);
+        cJSON_AddBoolToObject(resp, "v2", 1);
 
         cJSON *cfg = config_store_get_mqtt_json();
         if (cfg) {
@@ -402,12 +408,18 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
             if (p_user && cJSON_IsString(p_user)) {
                 cJSON_DeleteItemFromObject(cfg, "username");
                 cJSON_AddStringToObject(cfg, "username", p_user->valuestring);
+                /* No user name, no password: clearing the user name is how stored credentials are
+                 * removed (an empty password field keeps the stored one) */
+                if (!p_user->valuestring[0]) cJSON_DeleteItemFromObject(cfg, "password");
             }
 
-            cJSON *p_keep = cJSON_GetObjectItemCaseSensitive(params, "keep_password");
-            int keep = (p_keep && (cJSON_IsTrue(p_keep) || (cJSON_IsString(p_keep) && strcmp(p_keep->valuestring, "1") == 0)));
+            /* A typed password replaces the stored one; an empty or missing field keeps it. The old
+             * keep_password flag is ignored: ticked by default, it threw a typed password away.
+             * A password is stored only with a user name. */
             cJSON *p_pass = cJSON_GetObjectItemCaseSensitive(params, "password");
-            if (!keep && p_pass && cJSON_IsString(p_pass) && p_pass->valuestring[0]) {
+            cJSON *s_user = cJSON_GetObjectItemCaseSensitive(cfg, "username");
+            int has_user = cJSON_IsString(s_user) && s_user->valuestring[0];
+            if (has_user && p_pass && cJSON_IsString(p_pass) && p_pass->valuestring[0]) {
                 cJSON_DeleteItemFromObject(cfg, "password");
                 cJSON_AddStringToObject(cfg, "password", p_pass->valuestring);
             }
@@ -429,95 +441,24 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
                 cJSON_DeleteItemFromObject(cfg, "discoveryPrefix");
                 cJSON_AddStringToObject(cfg, "discoveryPrefix", p_disc->valuestring);
             }
-
-            cJSON *p_name = cJSON_GetObjectItemCaseSensitive(params, "name");
-            if (p_name && cJSON_IsString(p_name) && p_name->valuestring[0]) {
-                cJSON_DeleteItemFromObject(cfg, "name");
-                cJSON_AddStringToObject(cfg, "name", p_name->valuestring);
-            }
-
-            cJSON *p_ka = cJSON_GetObjectItemCaseSensitive(params, "keepAlive");
-            if (p_ka) {
-                int kanum = cJSON_IsNumber(p_ka) ? p_ka->valueint : (cJSON_IsString(p_ka) ? atoi(p_ka->valuestring) : 60);
-                cJSON_DeleteItemFromObject(cfg, "keepAlive");
-                cJSON_AddNumberToObject(cfg, "keepAlive", kanum > 0 ? kanum : 60);
-            }
-
             cJSON *p_ha = cJSON_GetObjectItemCaseSensitive(params, "haDiscovery");
             if (p_ha) {
-                int ha_val = cJSON_IsTrue(p_ha) || (cJSON_IsNumber(p_ha) && p_ha->valueint > 0) || (cJSON_IsString(p_ha) && strcmp(p_ha->valuestring, "1") == 0);
+                int ha_val = (cJSON_IsTrue(p_ha) || (cJSON_IsNumber(p_ha) && p_ha->valueint > 0) ||
+                              (cJSON_IsString(p_ha) && (strcmp(p_ha->valuestring, "1") == 0 || strcasecmp(p_ha->valuestring, "true") == 0)));
                 cJSON_DeleteItemFromObject(cfg, "haDiscovery");
                 cJSON_AddBoolToObject(cfg, "haDiscovery", ha_val);
             }
 
-            cJSON *p_btr = cJSON_GetObjectItemCaseSensitive(params, "btRemoteEvents");
-            if (p_btr) {
-                int btr_val = cJSON_IsTrue(p_btr) || (cJSON_IsNumber(p_btr) && p_btr->valueint > 0) || (cJSON_IsString(p_btr) && strcmp(p_btr->valuestring, "1") == 0);
-                cJSON_DeleteItemFromObject(cfg, "btRemoteEvents");
-                cJSON_AddBoolToObject(cfg, "btRemoteEvents", btr_val);
-            }
-
-            cJSON *p_btrt = cJSON_GetObjectItemCaseSensitive(params, "btRemoteTopic");
-            if (p_btrt && cJSON_IsString(p_btrt)) {
-                cJSON_DeleteItemFromObject(cfg, "btRemoteTopic");
-                cJSON_AddStringToObject(cfg, "btRemoteTopic", p_btrt->valuestring);
-            }
-
-            /* eliteRemote*: the names before the elite -> remote rename, accepted and dropped */
-            cJSON *p_el = cJSON_GetObjectItemCaseSensitive(params, "remoteEvents");
-            if (!p_el) p_el = cJSON_GetObjectItemCaseSensitive(params, "eliteRemoteEvents");
-            if (p_el) {
-                int el_val = cJSON_IsTrue(p_el) || (cJSON_IsNumber(p_el) && p_el->valueint > 0) || (cJSON_IsString(p_el) && (strcmp(p_el->valuestring, "1") == 0 || strcasecmp(p_el->valuestring, "true") == 0));
-                cJSON_DeleteItemFromObject(cfg, "remoteEvents");
-                cJSON_AddBoolToObject(cfg, "remoteEvents", el_val);
-            }
-
-            cJSON *p_elt = cJSON_GetObjectItemCaseSensitive(params, "remoteTopic");
-            if (!p_elt) p_elt = cJSON_GetObjectItemCaseSensitive(params, "eliteRemoteTopic");
-            if (p_elt && cJSON_IsString(p_elt)) {
-                cJSON_DeleteItemFromObject(cfg, "remoteTopic");
-                cJSON_AddStringToObject(cfg, "remoteTopic", p_elt->valuestring);
-            }
-            /* a file saved by an older build: its old keys go, the new ones carry the values */
-            if (cJSON_GetObjectItemCaseSensitive(cfg, "eliteRemoteEvents")) {
-                if (!cJSON_GetObjectItemCaseSensitive(cfg, "remoteEvents")) {
-                    cJSON_AddItemToObject(cfg, "remoteEvents", cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(cfg, "eliteRemoteEvents"), 1));
-                }
-                cJSON_DeleteItemFromObject(cfg, "eliteRemoteEvents");
-            }
-            if (cJSON_GetObjectItemCaseSensitive(cfg, "eliteRemoteTopic")) {
-                if (!cJSON_GetObjectItemCaseSensitive(cfg, "remoteTopic")) {
-                    cJSON_AddItemToObject(cfg, "remoteTopic", cJSON_Duplicate(cJSON_GetObjectItemCaseSensitive(cfg, "eliteRemoteTopic"), 1));
-                }
-                cJSON_DeleteItemFromObject(cfg, "eliteRemoteTopic");
-            }
-
-            cJSON *p_s1e = cJSON_GetObjectItemCaseSensitive(params, "slot1RemoteEvents");
-            if (p_s1e) {
-                int s1_val = cJSON_IsTrue(p_s1e) || (cJSON_IsNumber(p_s1e) && p_s1e->valueint > 0) || (cJSON_IsString(p_s1e) && (strcmp(p_s1e->valuestring, "1") == 0 || strcasecmp(p_s1e->valuestring, "true") == 0));
-                cJSON_DeleteItemFromObject(cfg, "slot1RemoteEvents");
-                cJSON_AddBoolToObject(cfg, "slot1RemoteEvents", s1_val);
-            }
-
-            cJSON *p_s1t = cJSON_GetObjectItemCaseSensitive(params, "slot1RemoteTopic");
-            if (p_s1t && cJSON_IsString(p_s1t)) {
-                cJSON_DeleteItemFromObject(cfg, "slot1RemoteTopic");
-                cJSON_AddStringToObject(cfg, "slot1RemoteTopic", p_s1t->valuestring);
-            }
-
-            cJSON *p_s2e = cJSON_GetObjectItemCaseSensitive(params, "slot2RemoteEvents");
-            if (p_s2e) {
-                int s2_val = cJSON_IsTrue(p_s2e) || (cJSON_IsNumber(p_s2e) && p_s2e->valueint > 0) || (cJSON_IsString(p_s2e) && (strcmp(p_s2e->valuestring, "1") == 0 || strcasecmp(p_s2e->valuestring, "true") == 0));
-                cJSON_DeleteItemFromObject(cfg, "slot2RemoteEvents");
-                cJSON_AddBoolToObject(cfg, "slot2RemoteEvents", s2_val);
-            }
-
-            cJSON *p_s2t = cJSON_GetObjectItemCaseSensitive(params, "slot2RemoteTopic");
-            if (p_s2t && cJSON_IsString(p_s2t)) {
-                cJSON_DeleteItemFromObject(cfg, "slot2RemoteTopic");
-                cJSON_AddStringToObject(cfg, "slot2RemoteTopic", p_s2t->valuestring);
-            }
-
+            /* Fields of the old MQTT layer that have no v2 equivalent are dropped: device name
+             * (the hub name is used), keepalive and the per-remote event topics (button events
+             * always go to <base>/remote/<slot>/button) */
+            static const char *const k_legacy_keys[] = {
+                "name", "deviceName", "keepAlive",
+                "btRemoteEvents", "btRemoteTopic", "remoteEvents", "remoteTopic",
+                "eliteRemoteEvents", "eliteRemoteTopic", /* names before the elite -> remote rename */
+                "slot1RemoteEvents", "slot1RemoteTopic", "slot2RemoteEvents", "slot2RemoteTopic", NULL
+            };
+            for (int lk = 0; k_legacy_keys[lk]; lk++) cJSON_DeleteItemFromObject(cfg, k_legacy_keys[lk]);
             cJSON_DeleteItemFromObject(cfg, "pollSeconds");
             cJSON_DeleteItemFromObject(cfg, "mqttDevices");
             cJSON_DeleteItemFromObject(cfg, "devices");
@@ -587,8 +528,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
                 const char *top = (j_top && cJSON_IsString(j_top)) ? j_top->valuestring : "";
                 const char *pay = (j_pay && cJSON_IsString(j_pay)) ? j_pay->valuestring : "";
                 if (top[0]) {
-                    int pms = 0;
-                    mqtt_dispatch_button_pulse_topic(NULL, NULL, pay[0] ? pay : "cmd", top, 1000, NULL, 0, &pms);
+                    hub_mqtt_publish_plain(top, pay[0] ? pay : "cmd");
                 }
                 cJSON_Delete(params);
                 cJSON *resp = cJSON_CreateObject();
@@ -638,11 +578,21 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
                     } else if (uname[0] && ulist[admin_idx].password[0]) {
                         compute_ha1(ulist[admin_idx].username, HARMONY_AUTH_REALM, ulist[admin_idx].password, ulist[admin_idx].ha1);
                     }
+                } else if (!pass[0]) {
+                    /* No admin account yet and no password given: never invent admin/admin (the
+                     * web UI used to save the moment the checkbox was ticked, before the form was
+                     * filled, and locked its owner out). Enabling needs a password first. */
+                    if (new_auth_enabled) {
+                        cJSON_Delete(params);
+                        send_json_error(client_fd, 400, "Set the admin username and password before enabling authentication");
+                        close(client_fd);
+                        return 1;
+                    }
                 } else {
                     if (ucnt < MAX_HTTP_USERS) {
                         admin_idx = ucnt++;
                         const char *final_user = uname[0] ? uname : "admin";
-                        const char *final_pass = pass[0] ? pass : "admin";
+                        const char *final_pass = pass;
                         strncpy(ulist[admin_idx].username, final_user, sizeof(ulist[admin_idx].username) - 1);
                         ulist[admin_idx].username[sizeof(ulist[admin_idx].username) - 1] = '\0';
                         strncpy(ulist[admin_idx].password, final_pass, sizeof(ulist[admin_idx].password) - 1);
@@ -685,6 +635,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         cJSON_AddStringToObject(resp, "ntp_server", s.ntp_server);
         cJSON_AddStringToObject(resp, "timezone", s.timezone[0] ? s.timezone : "UTC");
         cJSON_AddStringToObject(resp, "led_mode", s.led_mode[0] ? s.led_mode : HUB_LED_DEFAULT_MODE);
+        cJSON_AddBoolToObject(resp, "mdns_enabled", s.mdns_enabled ? 1 : 0);
         send_cjson_resp(client_fd, 200, resp);
         cJSON_Delete(resp);
         close(client_fd);
@@ -723,6 +674,11 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
                 strncpy(s.led_mode, item->valuestring, sizeof(s.led_mode) - 1);
                 s.led_mode[sizeof(s.led_mode) - 1] = '\0';
             }
+            item = cJSON_GetObjectItemCaseSensitive(p, "mdns_enabled");
+            if (item) {
+                if (cJSON_IsBool(item)) s.mdns_enabled = cJSON_IsTrue(item) ? 1 : 0;
+                else if (cJSON_IsNumber(item)) s.mdns_enabled = item->valueint ? 1 : 0;
+            }
             config_store_save_settings(&s);
             apply_hub_settings(&s);
             cJSON_Delete(p);
@@ -734,6 +690,7 @@ int http_api_system_handle(int client_fd, const char *method, const char *clean_
         cJSON_AddStringToObject(resp, "ntp_server", s.ntp_server);
         cJSON_AddStringToObject(resp, "timezone", s.timezone[0] ? s.timezone : "UTC");
         cJSON_AddStringToObject(resp, "led_mode", s.led_mode[0] ? s.led_mode : HUB_LED_DEFAULT_MODE);
+        cJSON_AddBoolToObject(resp, "mdns_enabled", s.mdns_enabled ? 1 : 0);
         send_cjson_resp(client_fd, 200, resp);
         cJSON_Delete(resp);
         close(client_fd);
