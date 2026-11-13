@@ -684,7 +684,7 @@ Answers the question for one device of the last Help. `"on": false` sends that d
 
 ### 5.1 Send IR Command
 #### `POST /api/ir-send` or `POST /ir/send`
-Transmits an IR command either by device ID and command name, or raw Pronto hex.
+Transmits an IR command either by device ID and command name (single string or array of strings), or raw Pronto hex.
 - **Request by Device Command**:
   ```json
   {
@@ -692,6 +692,20 @@ Transmits an IR command either by device ID and command name, or raw Pronto hex.
     "command": "PowerToggle"
   }
   ```
+- **Request with Multi-Command Array, Repeats, and Delays**:
+  ```json
+  {
+    "deviceId": "70321456",
+    "command": ["VolumeUp", "VolumeDown"],
+    "num_repeats": 2,
+    "delay_secs": 0.25,
+    "hold_secs": 0.0
+  }
+  ```
+  - `command` / `commands`: Single command name or array of command names (up to 32).
+  - `num_repeats`: Number of times to cycle through the command list (1-50, default: 1).
+  - `delay_secs`: Delay in seconds between successive commands (default: 0.25s for multi-commands, 0s for single).
+  - `hold_secs`: Button press hold duration in seconds before release (0.0 to 10.0s).
 - **Request by Raw Pronto**:
   ```json
   {
@@ -1086,7 +1100,27 @@ Returns remote firmware chunk update progress.
   ```
 
 #### `POST /api/rf/ota-start?slot={1|2}`
-Starts background remote firmware flash update (touchscreen remotes only).
+Starts background remote firmware update (touchscreen remotes only).
+- **Storage & Download Policy**:
+  The Hub does not store remote OTA images on flash storage. If `/tmp/remote_ui.ota.gz` is not already present in RAM, the Hub downloads `manifest.json` and the remote OTA image on-demand from the update repository into `/tmp/remote_ui.ota.gz`.
+  Developers or offline hubs can stage a local image using `python build/deploy_hub.py <IP> --stage-remote-ota`, which uploads the local binary to `/tmp/remote_ui.ota.gz` in RAM without internet access or flash writes.
+  *Note*: Authentication tokens are not forwarded during background OTA fetches; private repositories requiring tokens should stage the remote firmware image using `--stage-remote-ota`.
+- **Query Parameter**: `slot` (`1` or `2`, defaults to `1`).
+- **Responses**:
+  - `200 OK`: `{"status":"started","slot":1,"ok":true}` — OTA worker thread started.
+  - `400 Bad Request`: `{"status":"unsupported","slot":1,"error":"Companion remotes do not support OTA","ok":false}` — slot holds a Companion remote (no screen/firmware OTA).
+  - `409 Conflict`: `{"status":"already_in_progress","slot":1,"error":"RF OTA already in progress on slot 1","ok":false}` — an update or download is already running.
+- **Status reporting (`GET /api/rf/ota-status`)**:
+  - `status: 0`: Idle.
+  - `status: 3`: Downloading and verifying OTA image into `/tmp` (RF sync and ACKs remain unblocked).
+  - `status: 1`: RF transmission in progress (`in_progress: true`).
+  - `status: 2`: Successfully transferred; remote is verifying and installing.
+  - `status: -1`: Failed. Specific error conditions include:
+    - `"Failed to download OTA image to /tmp"`: update source unreachable or image missing.
+    - `"Remote OTA version mismatch against Hub"`: manifest version does not match the Hub's version.
+    - `"Remote OTA SHA-256 checksum mismatch"`: downloaded package failed integrity check against manifest.
+    - `"Remote rejected OTA: Low battery (<40%)"`: remote battery is below 40%.
+    - `"Chunk N ACK timeout (can resume)"` / `"Chunk N: no progress for 20 s (can resume)"`: RF communication stalled. The staged file in `/tmp` is preserved so the update can be resumed.
 
 ### 7.6 Physical Remote Key Mappings (Touchscreen Remotes, Companion, Smart Control)
 #### `GET /api/rf-mapping?slot={1|2}`
@@ -1426,6 +1460,18 @@ Connect via WebSocket to `ws://<hub_ip>:8089/ws` or `ws://<hub_ip>/ws`.
   "action": "send_command",
   "deviceId": "70321456",
   "command": "Mute",
+  "msgId": 3
+}
+```
+Multiple commands or repeats can be queued as an array:
+```json
+{
+  "action": "send_command",
+  "deviceId": "70321456",
+  "command": ["VolumeUp", "VolumeDown"],
+  "num_repeats": 2,
+  "delay_secs": 0.2,
+  "hold_secs": 0.0,
   "msgId": 3
 }
 ```

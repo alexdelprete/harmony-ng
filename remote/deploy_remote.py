@@ -47,7 +47,11 @@ MIGRATE_LEGACY_SH = (
 )
 # Commands the deployment runs on the remote, other than through /data/busybox
 REMOTE_COMMANDS = ("md5sum", "mkdir", "rm", "mv", "cp", "chmod", "ln", "grep", "touch", "scp")
-CHECK_BUSYBOX = "/tmp/.deploy_check_busybox"  # the local busybox, run from RAM by the check
+# The local busybox, run from RAM by the check. BusyBox picks the applet from its own file name,
+# so the staged copy must be called busybox: under any other name every applet call fails with
+# "applet not found" and the check refuses a fresh install. Same path setup_remote.py stages for
+# the backup; the check removes it when done.
+CHECK_BUSYBOX = "/tmp/busybox"
 FLASH_SLACK_KB = 32  # JFFS2/UBIFS need room beyond each file's own size
 
 
@@ -196,8 +200,6 @@ def main() -> None:
     parser.add_argument("--ip", default="192.168.2.1", help="Remote IP address (default 192.168.2.1)")
     parser.add_argument("--user", default="root", help="SSH username (default root)")
     parser.add_argument("--key", type=pathlib.Path, help="SSH private key path")
-    parser.add_argument("--debug-busybox", "--dev-mode", dest="debug_busybox", action="store_true",
-                        help="Install modified extended BusyBox build to /data/busybox (default: False)")
     parser.add_argument("--factory-reset", action="store_true",
                         help="Revert the Harmony remote to stock firmware (restores stock scripts & permissions)")
     parser.add_argument("--reboot", action="store_true",
@@ -220,10 +222,8 @@ def main() -> None:
     print(f"  Target: {target}")
     if args.factory_reset:
         print("  Mode: FACTORY RESET & STOCK RESTORATION")
-    elif args.debug_busybox:
-        print("  Mode: Developer / Debug (Extended BusyBox enabled)")
     else:
-        print("  Mode: Standard User (Stock BusyBox; existing installation left untouched)")
+        print("  Mode: Extended BusyBox & Remote Runtime")
     print("=" * 60)
 
     # 1. Test SSH connectivity

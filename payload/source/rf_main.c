@@ -32,50 +32,47 @@ static void enqueue_browsed_device_cmd(const uint8_t *payload) {
     int cmd_idx = payload[4];
     memcpy(prefix, &payload[5], 20);
 
-    FILE *fd = fopen("/data/harmony/config/devices.json", "r");
-    if (!fd) return;
-    fseek(fd, 0, SEEK_END);
-    long sz = ftell(fd);
-    fseek(fd, 0, SEEK_SET);
-    char *buf = (sz > 0 && sz < 1000000) ? malloc(sz + 1) : NULL;
-    if (!buf) { fclose(fd); return; }
-    size_t n = fread(buf, 1, sz, fd);
-    fclose(fd);
-    if (n != (size_t)sz) { free(buf); return; }
-    buf[n] = '\0';
-    cJSON *root = cJSON_Parse(buf);
-    free(buf);
-    if (!root) return;
+    char matched_full_id[64] = {0};
+    char matched_cmd_name[64] = {0};
+    int found = 0;
 
-    cJSON *devs_arr = cJSON_IsArray(root) ? root : cJSON_GetObjectItem(root, "devices");
-    const char *full_id = NULL;
-    const char *cmd_name = NULL;
-    cJSON *dev = NULL;
-    cJSON_ArrayForEach(dev, devs_arr) {
-        cJSON *jid = cJSON_GetObjectItem(dev, "id");
-        if (!jid || !cJSON_IsString(jid) || strncmp(jid->valuestring, dev_id, 7) != 0) continue;
-        full_id = jid->valuestring;
-        cJSON *cmds = cJSON_GetObjectItem(dev, "commands");
-        int c = 0;
-        cJSON *cmd = NULL;
-        cJSON_ArrayForEach(cmd, cmds) {
-            cJSON *jn = cJSON_IsString(cmd) ? cmd : cJSON_GetObjectItem(cmd, "name");
-            if (jn && cJSON_IsString(jn) && strncmp(jn->valuestring, prefix, 20) == 0) {
-                if (c == cmd_idx) { cmd_name = jn->valuestring; break; }
-                if (!cmd_name) cmd_name = jn->valuestring; /* index moved: first name match */
+    rf_devices_cache_lock();
+    cJSON *root = rf_get_devices_cache();
+    if (root) {
+        cJSON *devs_arr = cJSON_IsArray(root) ? root : cJSON_GetObjectItem(root, "devices");
+        cJSON *dev = NULL;
+        cJSON_ArrayForEach(dev, devs_arr) {
+            cJSON *jid = cJSON_GetObjectItem(dev, "id");
+            if (!jid || !cJSON_IsString(jid) || strncmp(jid->valuestring, dev_id, 7) != 0) continue;
+            const char *full_id = jid->valuestring;
+            cJSON *cmds = cJSON_GetObjectItem(dev, "commands");
+            int c = 0;
+            const char *cmd_name = NULL;
+            cJSON *cmd = NULL;
+            cJSON_ArrayForEach(cmd, cmds) {
+                cJSON *jn = cJSON_IsString(cmd) ? cmd : cJSON_GetObjectItem(cmd, "name");
+                if (jn && cJSON_IsString(jn) && strncmp(jn->valuestring, prefix, 20) == 0) {
+                    if (c == cmd_idx) { cmd_name = jn->valuestring; break; }
+                    if (!cmd_name) cmd_name = jn->valuestring; /* index moved: first name match */
+                }
+                c++;
             }
-            c++;
+            if (full_id && cmd_name) {
+                strncpy(matched_full_id, full_id, sizeof(matched_full_id) - 1);
+                strncpy(matched_cmd_name, cmd_name, sizeof(matched_cmd_name) - 1);
+                found = 1;
+            }
+            break;
         }
-        break;
     }
+    rf_devices_cache_unlock();
 
-    if (full_id && cmd_name) {
-        printf("[*] Device browser command: dev=%s idx=%d -> %s\n", full_id, cmd_idx, cmd_name);
-        enqueue_remote_device_cmd(full_id, cmd_name);
+    if (found) {
+        printf("[*] Device browser command: dev=%s idx=%d -> %s\n", matched_full_id, cmd_idx, matched_cmd_name);
+        enqueue_remote_device_cmd(matched_full_id, matched_cmd_name);
     } else {
         printf("[-] Device browser command not found: dev=%s idx=%d name=%s\n", dev_id, cmd_idx, prefix);
     }
-    cJSON_Delete(root);
 }
 
 void handle_rf_frame(const rf_frame_t *f) {
@@ -110,7 +107,7 @@ void handle_rf_frame(const rf_frame_t *f) {
 
             static uint32_t s_last_sync_ms = 0;
             uint32_t now_ms = (uint32_t)get_monotonic_ms();
-            if (!is_ota_busy() && (now_ms - s_last_sync_ms > 5000)) {
+            if (!is_ota_busy() && !is_activity_transitioning() && (now_ms - s_last_sync_ms > 5000)) {
                 s_last_sync_ms = now_ms;
                 char cur[32] = "-1";
                 get_current_activity(cur, sizeof(cur));
@@ -204,6 +201,7 @@ void handle_rf_frame(const rf_frame_t *f) {
 
             if (req_type == 0x02) {
                 rf_sync_cache_invalidate();
+                rf_keymap_invalidate_map(0);
                 usleep(50000);
                 pthread_t push_th;
                 pthread_create(&push_th, NULL, config_push_worker, NULL);
@@ -300,11 +298,11 @@ void handle_rf_frame(const rf_frame_t *f) {
             if (slot < 1 || slot > 2) slot = g_remote_slot ? g_remote_slot : 1;
             printf("[*] Remote in slot %d requested RF OTA pull\n", slot);
             pthread_mutex_lock(&g_ota_lock);
-            if (!g_rf_ota.in_progress) {
-                g_rf_ota.in_progress = true;
+            if (!g_rf_ota.in_progress && g_rf_ota.status_code != 3) {
+                g_rf_ota.in_progress = false;
                 g_rf_ota.target_slot = slot;
-                g_rf_ota.status_code = 1;
-                g_rf_ota.error_msg[0] = '\0';
+                g_rf_ota.status_code = 3;
+                snprintf(g_rf_ota.error_msg, sizeof(g_rf_ota.error_msg), "Preparing OTA update...");
                 pthread_t ota_th;
                 if (pthread_create(&ota_th, NULL, rf_ota_sender_worker, (void *)(uintptr_t)slot) == 0) {
                     pthread_detach(ota_th);
@@ -312,7 +310,6 @@ void handle_rf_frame(const rf_frame_t *f) {
                     rf_build_ack(&ack, slot, f->seq, 0x00);
                     rf_send_frame(&ack);
                 } else {
-                    g_rf_ota.in_progress = false;
                     g_rf_ota.status_code = -1;
                     rf_frame_t ack;
                     rf_build_ack(&ack, slot, f->seq, 0x01);
