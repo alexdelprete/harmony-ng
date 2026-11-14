@@ -13,6 +13,7 @@ import importlib.util
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -35,6 +36,7 @@ def load_setup_remote():
 DEVICE_DIRS = "etc|root|home|usr|data|sbin|tmp|bin|sys"
 
 
+@unittest.skipIf(sys.platform == "win32" or not shutil.which("sh"), "needs a POSIX sh")
 class RootBootScripts(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -56,13 +58,13 @@ class RootBootScripts(unittest.TestCase):
         text = template.decode("ascii").replace("%PUBKEY%", "ssh-ed25519 AAAA test").replace("%OFFSET%", "00000000")
         text = re.sub(
             r"(?<![\w./$-])/(" + DEVICE_DIRS + r")(?=[/\s\"']|$)",
-            lambda m: f"{self.root}/{m.group(1)}",
+            lambda m: f"{self.root.as_posix()}/{m.group(1)}",
             text,
             flags=re.M,
         )
         script = self.base / "boot.sh"
         script.write_text(text)
-        env = dict(os.environ, PATH=f"{self.stub}:/usr/bin:/bin", FAKE_MACHINE=machine)
+        env = dict(os.environ, PATH=os.pathsep.join([str(self.stub), "/usr/bin", "/bin"]), FAKE_MACHINE=machine)
         subprocess.run(["sh", "-c", f'sh "{script}"; true'], env=env, capture_output=True, timeout=30)
 
     def changed(self) -> bool:
