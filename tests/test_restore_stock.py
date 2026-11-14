@@ -29,6 +29,8 @@ REAL_RUN = subprocess.run
 REAL_POPEN = subprocess.Popen
 
 FAKE_BUSYBOX = '#!/bin/sh\ncase "$1" in\n  tar) shift; exec tar "$@" ;;\n  sync) exit 0 ;;\nesac\nexit 1\n'
+# A tar that fails at once without reading its input
+FAILING_BUSYBOX = '#!/bin/sh\ncase "$1" in\n  tar) echo "tar: invalid option" >&2; exit 1 ;;\n  sync) exit 0 ;;\nesac\nexit 1\n'
 
 
 def make_backup(path: pathlib.Path) -> None:
@@ -49,12 +51,14 @@ class FakeHub:
         self.commands: list[str] = []
 
     def map(self, cmd: str) -> str:
-        cmd = re.sub(r"(?<![\w./-])/(cache|data|tmp|usr|etc)/", lambda m: f"{self.root}/{m.group(1)}/", cmd)
-        return cmd.replace("-C /", f"-C {self.root}/")
+        # POSIX form: sh would read the backslashes of a Windows path as escapes
+        root = self.root.as_posix()
+        cmd = re.sub(r"(?<![\w./-])/(cache|data|tmp|usr|etc)/", lambda m: f"{root}/{m.group(1)}/", cmd)
+        return cmd.replace("-C /", f"-C {root}/")
 
     def unmap(self, out):
         if isinstance(out, str):
-            return out.replace(str(self.root), "")
+            return out.replace(self.root.as_posix(), "")
         return out
 
     def run(self, argv, *args, **kwargs):
@@ -92,10 +96,10 @@ class RestoreStock(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def install_busybox(self, rel: str) -> None:
+    def install_busybox(self, rel: str, script: str = FAKE_BUSYBOX) -> None:
         bb = self.root / rel
         bb.parent.mkdir(parents=True, exist_ok=True)
-        bb.write_text(FAKE_BUSYBOX)
+        bb.write_text(script)
         bb.chmod(0o755)
 
     def restore(self, pure_stock: bool = False) -> None:
@@ -120,6 +124,7 @@ class RestoreStock(unittest.TestCase):
         self.install_busybox("data/harmony/bin/busybox")
         self.restore()
         self.assertTrue((self.root / "cache" / "stock_cache_file").is_file())
+        self.assertTrue((self.root / "data" / "stock_data_file").is_file())
         self.assertTrue(self.rebooted())
 
     def test_failed_extraction_stops_before_reboot(self):
@@ -129,6 +134,22 @@ class RestoreStock(unittest.TestCase):
         self.backup.write_bytes(data[:700])
         with self.assertRaises(RuntimeError):
             self.restore(pure_stock=True)
+        self.assertFalse(self.rebooted())
+        self.assertFalse(any("dropbear" in c for c in self.hub.commands))
+
+    def test_tar_failing_at_once_reports_its_error(self):
+        """tar exits before reading the archive: the restore stops with tar's exit code and
+        message, not with a broken pipe."""
+        self.install_busybox("cache/bin/busybox", FAILING_BUSYBOX)
+        # Larger than a pipe buffer, so the copy is still writing when tar has gone
+        with tarfile.open(self.backup, "a") as tar:
+            info = tarfile.TarInfo("data/big")
+            info.size = 1 << 20
+            tar.addfile(info, io.BytesIO(b"\0" * info.size))
+        with self.assertRaises(RuntimeError) as ctx:
+            self.restore(pure_stock=True)
+        self.assertIn("tar exit code 1", str(ctx.exception))
+        self.assertIn("invalid option", str(ctx.exception))
         self.assertFalse(self.rebooted())
         self.assertFalse(any("dropbear" in c for c in self.hub.commands))
 

@@ -283,7 +283,6 @@ def restore_stock_configuration(
     )
     bb_res = run_ssh_cmd(target, chk_cmd, ssh_opts)
     bb_bin = bb_res.stdout.strip()
-    uploaded_temp_bb = False
 
     # /cache is emptied before the extraction and the archive overwrites /data: run tar from a
     # copy in /tmp, not from /cache/bin or /data/harmony/bin
@@ -313,7 +312,6 @@ def restore_stock_configuration(
                 timeout=30,
             )
         bb_bin = "/tmp/busybox"
-        uploaded_temp_bb = True
 
     # Clean old transient files in /cache
     run_ssh_cmd(target, "rm -rf /cache/* 2>/dev/null || true", ssh_opts)
@@ -331,9 +329,13 @@ def restore_stock_configuration(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-        shutil.copyfileobj(f_in, proc.stdin)
-        # communicate() flushes and closes stdin itself; closing it here first makes Python
-        # 3.11 and older raise "flush of closed file"
+        try:
+            shutil.copyfileobj(f_in, proc.stdin)
+        except BrokenPipeError:
+            # tar (or ssh) stopped reading: its exit code and message below say why
+            pass
+        # communicate() flushes and closes stdin itself (and ignores a broken pipe); closing it
+        # here first makes Python 3.11 and older raise "flush of closed file"
         stdout, stderr = proc.communicate(timeout=180)
         if proc.returncode != 0:
             raise RuntimeError(
