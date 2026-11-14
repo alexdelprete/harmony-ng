@@ -18,6 +18,7 @@ from tools import harmony_firmware as fw  # noqa: E402
 class FakeHid:
     present: set[int] = set()
     write_ok = True
+    checksum_ok = True
     calls: list[str] = []
 
     def __init__(self, pid: int):
@@ -42,7 +43,7 @@ class FakeHid:
 
     def verify_checksum(self, **kwargs):
         FakeHid.calls.append("verify_checksum")
-        return True, "match"
+        return (True, "match") if FakeHid.checksum_ok else (False, "status_mismatch")
 
     def close_file(self, handle_id) -> bool:
         FakeHid.calls.append("close_file")
@@ -73,6 +74,7 @@ class FlashFirmware(unittest.TestCase):
     def setUp(self):
         FakeHid.present = {fw.HUB_PID}
         FakeHid.write_ok = True
+        FakeHid.checksum_ok = True
         FakeHid.calls = []
         p = patch.object(fw, "HarmonyHid", FakeHid)
         p.start()
@@ -83,6 +85,13 @@ class FlashFirmware(unittest.TestCase):
         self.assertFalse(fw.flash_firmware(hub_bundle(), target_device="hub", skip_confirm=True))
         self.assertNotIn("finalize_reset", FakeHid.calls)
         self.assertNotIn("verify_checksum", FakeHid.calls)
+        self.assertIn("close_file", FakeHid.calls)
+
+    def test_failed_checksum_does_not_reset(self):
+        FakeHid.checksum_ok = False
+        self.assertFalse(fw.flash_firmware(hub_bundle(), target_device="hub", skip_confirm=True))
+        self.assertIn("verify_checksum", FakeHid.calls)
+        self.assertNotIn("finalize_reset", FakeHid.calls)
         self.assertIn("close_file", FakeHid.calls)
 
     def test_good_write_resets(self):
@@ -111,6 +120,23 @@ class FlashFirmware(unittest.TestCase):
             fw.main()
         self.assertEqual(seen["target"], "hub")
         self.assertTrue(str(seen["bundle"]).startswith("hub_97_"), seen["bundle"])
+
+    def test_auto_target_passes_the_detected_device(self):
+        """--target auto: the device found by the probe is flashed, flash_firmware does not probe again."""
+        FakeHid.present = {fw.HUB_PID}
+        seen: dict[str, object] = {}
+
+        def fake_flash(bundle, target_device, dry_run, skip_confirm):
+            seen["target"] = target_device
+            return True
+
+        with patch.object(fw, "query_latest_firmware", return_value={"URI": "https://example.invalid/hub", "Id": "4.15.600"}), \
+             patch.object(fw, "download_file", return_value=True), \
+             patch.object(fw, "parse_hfw2_bundle", return_value=hub_bundle()), \
+             patch.object(fw, "flash_firmware", side_effect=fake_flash), \
+             patch.object(sys, "argv", ["harmony_firmware.py", "flash", "--yes"]):
+            fw.main()
+        self.assertEqual(seen["target"], "hub")
 
 
 if __name__ == "__main__":

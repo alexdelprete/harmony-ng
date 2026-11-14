@@ -538,6 +538,11 @@ def flash_firmware(
                 checksum_type=img.checksum_type,
             )
             print(f"[*] Checksum result: {cs_result} (accepted={cs_ok})")
+            if not cs_ok:
+                # The device did not accept the image: never hand it to the updater
+                print(f"[-] Checksum check of {img.name} failed ({cs_result}); device not reset, its current firmware stays.", file=sys.stderr)
+                hid.close_file(handle_id)
+                return False
 
             # Close handle
             print("[*] Closing file handle...")
@@ -740,7 +745,8 @@ def main():
         bundle = parse_hfw2_bundle(fw_path)
         ok = flash_firmware(
             bundle=bundle,
-            target_device=args.target,
+            # the device detected above, so flash_firmware does not probe again
+            target_device=args.target if args.firmware else target,
             dry_run=args.dry_run,
             skip_confirm=args.yes,
         )
