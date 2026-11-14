@@ -2,6 +2,8 @@
 
 `hub_daemon` provides an ultra-lightweight REST and WebSocket interface running natively on port 8089 (HTTP / WebSocket). RF hardware calls are transparently proxied to `hub_rf` on port 8092 via `/api/rf/*`.
 
+**Requests from web pages.** Port 8089 refuses requests and WebSocket upgrades that a browser sends on behalf of another web site: an `Origin` header that is not the Hub's own clients answers `403`, and so does a request without `Origin` that the browser marks `Sec-Fetch-Site: cross-site` or `same-site`. Allowed origins: the Hub itself (the `Origin` host matches the request's `Host`, or `X-Forwarded-Host` behind a reverse proxy), `http://localhost` and `https://localhost` on any port (the Android app, local development servers), `http://127.0.0.1`, `capacitor://localhost` and `ionic://localhost`. Clients outside a browser (the Home Assistant integration, scripts, `curl`) send neither header and are not affected. A CORS preflight (`OPTIONS`) from any other origin is answered `403`. Port 8088 (Logitech protocol) is not affected.
+
 ---
 
 ## 1. System, Status & Diagnostics
@@ -225,7 +227,7 @@ Updates global hub settings.
 - **Response `200 OK`**: `{"ok": true}`
 
 #### `POST /api/bt/reconnect` or `POST /bt/reconnect`
-Triggers on-demand Bluetooth host reconnection supervision.
+Triggers on-demand Bluetooth host reconnection supervision. `target` (also accepted as `bdaddr` or `deviceId`) must be a Bluetooth address `XX:XX:XX:XX:XX:XX` or be left out (the default host); anything else answers `400`. `duration` and `delay` are capped at 3600 s.
 - **Request Body (optional)**:
   ```json
   {
@@ -291,6 +293,11 @@ stock clients expect, and answers SSDP searches so the core integration discover
 default. Port 8088 is never authenticated: the stock protocol has no authentication, so enable it
 only on a trusted network. The daemon's own API on 8089 (sections 1 to 11) is unchanged; both
 integrations can be used at the same time.
+
+**Authentication on 8089 does not cover 8088.** With the shim on, any client on the LAN can read the
+inventory, start and stop activities and send any device command through 8088 without credentials,
+even when authentication is enabled for 8089. Leave `legacy_enabled` off unless the core `harmony`
+integration is needed.
 
 - `POST /` on 8088 (body `{"id ":1,"cmd":"setup.account?getProvisionInfo","params":{}}`, the
   trailing space in `id ` is what the client sends) answers the provisioning object:
@@ -375,6 +382,7 @@ Checks for newer release bundles.
 ### 2.3 Apply Update
 #### `POST /api/update-apply`
 Executes `/data/harmony/update.sh` in the background and restarts services.
+- **Signed releases only**: the update source (the official `ota` branch, or `repo`) must publish `manifest.json` and `manifest.json.sig`, the Ed25519 signature of the manifest by a release key built into the Hub firmware (`payload/source/ota_keys.h`). `update.sh` checks the signature with `hub_util ota-verify`, takes the version from the signed manifest, and installs a file only when its SHA-256 matches the manifest. Without a valid signature nothing is changed, whatever server `repo` names. TLS is not relied on: the Hub's `wget` does not verify certificates.
 - **Response `200 OK`**:
   ```json
   {
@@ -387,6 +395,8 @@ Executes `/data/harmony/update.sh` in the background and restarts services.
 ---
 
 ## 3. Inventory & Device Management
+
+Device, command and activity names (and a device's manufacturer and model) never contain `<`, `>` or control characters: the Hub drops them when it loads or saves the configuration, so a name cannot become markup in a client that shows it without escaping. Every other character is kept.
 
 ### 3.1 Get Inventory
 #### `GET /api/inventory`
@@ -427,10 +437,20 @@ Creates or updates a device definition.
     "controlPort": 0,
     "mqttTopic": "home/livingroom/tv",
     "mqttEnabled": true,
-    "mqttPulse": 100
+    "mqttPulse": 100,
+    "interDeviceDelay": 500,
+    "interKeyDelay": 100,
+    "holdInterKeyDelay": 200
   }
   ```
+- `interDeviceDelay` (wait before a command to this device when the previous one went to another
+  device), `interKeyDelay` (between two different commands to it) and `holdInterKeyDelay` (between
+  repeats of the same command) are milliseconds from 0 to 10000. The sender waits them out before
+  the command, so a save with a value outside that range is refused with `400` and nothing is
+  changed; a larger value already in `devices.json` is lowered to 10000 when the file is loaded.
 - **Response `200 OK`**: `{"ok": true}`
+- **Response `400`**: `{"ok": false}` when a timing field is not a number (or numeric string) or a
+  delay is out of range.
 
 ### 3.3 Delete Device
 #### `POST /api/device-delete` or `POST /ir/delete-device`
@@ -752,9 +772,19 @@ Sends a captured code once through the IR ports of a device (its `controlPort`, 
 #### `POST /api/button-press` or `POST /api/mqtt-publish`
 Reports a physical key. Every call gives a `button` event on the WebSocket (10.13) and on MQTT
 (`<base>/remote/<slot>/button`, 8.1) for `action` `press` (the default) and `release`; `hold`
-repeats give nothing (they are sent to the device by `hub_rf` itself). `hub_rf` posts physical keys as `{"button": <key name>,
-"action", "source": "remote_rf", "slot"}` plus `deviceId` and `command` when the key was mapped to
-a device command; other callers may keep posting the key as `command`.
+repeats give nothing (they are sent to the device by `hub_rf` itself). `hub_rf` sends physical
+keys on its own local key channel (below) and posts here only when `hub_daemon` has none (an
+older `hub_daemon`): `{"button": <key name>, "action", "source": "remote_rf", "slot"}` plus
+`deviceId` and `command` when the key was mapped to a device command; other callers may keep
+posting the key as `command`.
+
+**Key channel from `hub_rf`.** One UNIX datagram per press, hold and release on
+`/tmp/hub_daemon_keys.sock`, read in order by one thread of `hub_daemon` (no HTTP worker, no
+main loop): `{"seq", "ts", "slot", "button", "action", "deviceId", "command"}`, `ts` being
+`CLOCK_MONOTONIC` in ms when `hub_rf` received the key. `hub_daemon` sends the device command as
+`POST /api/ir-send` with that `action` does and gives the same button event as this route. A
+press or hold older than 300 ms is skipped (logged), a release always runs. Not an API for other
+callers: format in `payload/source/hub_key_channel.h`.
 - **Request Body**:
   ```json
   {
@@ -908,6 +938,12 @@ Pairs with target BLE remote MAC address.
 The Hub connects only to the remote paired this way (the scan lists the remotes in range, the pair
 request pins one). With no remote pinned it does not scan and does not connect to any BLE device on
 its own; older builds bonded with any discoverable BLE HID device in range.
+
+The pair request also opens a pairing window of 120 s for that address. A new LE pairing (bonding)
+is accepted only inside it; outside it the Hub declines every pairing request, also from a device
+that advertises with the pinned remote's address. When the pinned remote reconnects without a key
+for this Hub (it was reset or paired elsewhere), the stored bond is kept and the link is closed:
+pair the remote again with this request. Remote buttons count only on an encrypted link.
 
 #### `POST /api/remote-unpair`
 Forgets the pinned BLE remote: removes its address from `bt_remote_map.json`, and `hub_btstack`
@@ -1102,7 +1138,7 @@ Returns remote firmware chunk update progress.
 #### `POST /api/rf/ota-start?slot={1|2}`
 Starts background remote firmware update (touchscreen remotes only).
 - **Storage & Download Policy**:
-  The Hub does not store remote OTA images on flash storage. If `/tmp/remote_ui.ota.gz` is not already present in RAM, the Hub downloads `manifest.json` and the remote OTA image on-demand from the update repository into `/tmp/remote_ui.ota.gz`.
+  The Hub does not store remote OTA images on flash storage. If `/tmp/remote_ui.ota.gz` is not already present in RAM, the Hub downloads `manifest.json`, `manifest.json.sig` and the remote OTA image on-demand from the update repository into `/tmp`, and sends the image only when the manifest carries a valid release signature and the image matches its SHA-256 (see `POST /api/update-apply`). An image staged by hand without a manifest is sent as is.
   Developers or offline hubs can stage a local image using `python build/deploy_hub.py <IP> --stage-remote-ota`, which uploads the local binary to `/tmp/remote_ui.ota.gz` in RAM without internet access or flash writes.
   *Note*: Authentication tokens are not forwarded during background OTA fetches; private repositories requiring tokens should stage the remote firmware image using `--stage-remote-ota`.
 - **Query Parameter**: `slot` (`1` or `2`, defaults to `1`).
@@ -1160,6 +1196,12 @@ payload once, so brokers drop them (marker `/data/harmony/mqtt_v2_migrated`). Th
 discovery entities, the inbound command topics of the first MQTT layer and the pulse of MQTT-type
 devices are kept (below).
 
+**The broker is trusted as admin.** Commands that arrive over MQTT run with the admin role, including
+`update_apply`, and the connection is plain TCP (user name and password in clear text). Anyone who
+can publish to the broker, or read the credentials on the way to it, controls the Hub. Use a broker
+account and ACLs that only the Hub and trusted clients have, on a trusted network. The global topic
+`harmony/ir/pronto` sends any Pronto code it receives.
+
 #### `POST /api/mqtt-save` or `POST /mqtt`
 - **Request Body** (every field optional; `password` is kept when absent or empty):
   ```json
@@ -1183,7 +1225,7 @@ devices are kept (below).
 - **Response `200 OK`**: `{"ok": true, "message": "MQTT settings saved"}`; the client reconnects.
 
 #### `GET /api/mqtt-status`
-`{"ok": true, "connected": true, "broker": "...", "port": 1883, "baseTopic": "harmony/hub", "v2": true, "config": {...}}`
+`{"ok": true, "connected": true, "broker": "...", "port": 1883, "baseTopic": "harmony/hub", "v2": true, "config": {...}}`. `config` is the stored MQTT settings without the password (`has_password` tells whether one is stored; saving with an empty password keeps it).
 
 #### Topics
 `<base>` is `baseTopic` (default `harmony/hub`). Payloads are JSON objects with `type`, `seq` and
@@ -1774,12 +1816,24 @@ still answered with pongs. Capability flag: `ws_keepalive`.
 
 Harmony Hub supports a multi-tier authentication model:
 
-### 11.1 HTTP Digest Authentication (RFC 7616 / RFC 2617)
-Protects credentials on the wire without requiring SSL/TLS overhead on embedded hardware. Nonces are HMAC-SHA256 signed with dynamic expiry.
+### 11.1 Accounts, Basic authentication and rules
+- **Basic** (`Authorization: Basic`) is accepted on every route, under the same failed-login limit as
+  `POST /api/auth/token`: after 3 wrong passwords from one address, that address is locked for 2 s,
+  then 4, 8, 16, up to 30 s, for both. Digest authentication is not offered.
+- Passwords are stored as SHA-256 of `user:Harmony Hub:password`; names must be shorter than 32 bytes
+  (no `:` or line breaks), passwords at most 128 bytes.
+- The account list always keeps at least one admin: `POST /api/users` answers `400` instead of
+  demoting or replacing the last admin (no default account is ever created).
+- Deleting an account, changing its role or password ends its sessions; deleting it also deletes the
+  personal access tokens it created. Turning authentication on or off ends every session.
+- Personal access tokens can be created only while authentication is on (`409` otherwise), carry the
+  creating account as `owner`, end with it, and never have more rights than it.
+- If `config/users.json` exists but cannot be read (cut, empty, broken) and `webui_auth.conf` has no
+  account either, every request except from loopback is refused (`401`) until the file is fixed.
+- `GET /api/mqtt-status` never returns the stored broker password (`config.has_password` instead).
 
 ```bash
-# Digest authentication with curl
-curl --digest -u admin:secret123 http://192.168.1.1:8089/api/status
+curl -u admin:secret123 http://192.168.1.1:8089/api/status
 ```
 
 ### 11.2 OAuth2 Bearer Session Tokens (RFC 6749 / RFC 6750)
@@ -1831,7 +1885,7 @@ in the request line:
 `ws://192.168.1.1:8089/ws?token=pat_3f8a9b...`
 
 - Personal access tokens (`pat_...`, 11.3) and session tokens (`hht_...`, 11.2) are both accepted.
-  Digest and Basic credentials are not supported on the upgrade.
+  Basic credentials in an `Authorization` header are accepted on the upgrade as on every route.
 - Missing, unknown or revoked token: `401 Unauthorized` with the usual challenge; the connection is
   closed, never upgraded. Callers on the Hub itself (`127.0.0.1`, `::1`: `hub_rf`, `hub_btstack`)
   need no token, as for every request. With authentication disabled nothing changes.

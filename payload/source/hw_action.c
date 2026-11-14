@@ -6,6 +6,7 @@
 #include "config_store.h"
 #include "bt_common.h"
 #include "orchestrator.h"
+#include "hub_events.h"
 #include "cJSON.h"
 
 #include <stdio.h>
@@ -24,39 +25,9 @@
 
 
 static hw_mqtt_button_handler_t g_mqtt_button_handler = NULL;
-static int g_local_api_port = 8089;
 
 void hw_set_mqtt_button_handler(hw_mqtt_button_handler_t handler) {
     g_mqtt_button_handler = handler;
-}
-
-void hw_set_local_api_port(int port) {
-    if (port > 0) g_local_api_port = port;
-}
-
-/* Blocking socket: send until everything is out */
-static int send_all_fd(int fd, const char *buf, size_t len) {
-    while (len > 0) {
-        ssize_t n = send(fd, buf, len, MSG_NOSIGNAL);
-        if (n < 0 && errno == EINTR) continue;
-        if (n <= 0) return -1;
-        buf += n;
-        len -= (size_t)n;
-    }
-    return 0;
-}
-
-static char *build_button_press_json(const char *device_id, const char *dev_name, const char *command, int action) {
-    cJSON *j = cJSON_CreateObject();
-    if (!j) return NULL;
-    cJSON_AddStringToObject(j, "deviceId", device_id ? device_id : "");
-    cJSON_AddStringToObject(j, "device", (dev_name && dev_name[0]) ? dev_name : "Dummy");
-    cJSON_AddStringToObject(j, "command", command ? command : "");
-    const char *act_str = (action == HW_BTN_ACTION_RELEASE) ? "release" : ((action == HW_BTN_ACTION_REPEAT) ? "hold" : "press");
-    cJSON_AddStringToObject(j, "action", act_str);
-    char *out = cJSON_PrintUnformatted(j);
-    cJSON_Delete(j);
-    return out;
 }
 
 int g_dry_run = 0;
@@ -369,13 +340,7 @@ static void check_and_trigger_bt_reconnect_for_command(cJSON *devs, const char *
     }
 }
 
-static int hw_device_command_send_match(const char *target, int match_mode, const char *command, int action) {
-    if (!target || !command) return -1;
-
-    /* BORROWED from resource_cache - DO NOT free or cJSON_Delete */
-    cJSON *root = get_device_list_cached();
-    if (!root) return -4;
-
+static int send_match_in(cJSON *root, const char *target, int match_mode, const char *command, int action) {
     int ret = -1;
 
     cJSON *devs = cJSON_GetObjectItemCaseSensitive(root, "devices");
@@ -561,23 +526,36 @@ static int hw_device_command_send_match(const char *target, int match_mode, cons
     static uint64_t s_last_cmd_time_ms = 0;
     static char s_last_device_id[64] = {0};
     static char s_last_cmd_name[64] = {0};
+    /* the last accepted press or tap, for the duplicate filter below */
+    static uint64_t s_last_press_ms = 0;
+    static char s_last_press_dev[64] = {0};
+    static char s_last_press_cmd[64] = {0};
 
-    pthread_mutex_lock(&s_hw_cmd_lock);
     struct timespec ts;
+    /* when the request came in, before it waits for a send in progress */
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    uint64_t arrival_ms = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
+    pthread_mutex_lock(&s_hw_cmd_lock);
     clock_gettime(CLOCK_MONOTONIC, &ts);
     uint64_t now_ms = (uint64_t)ts.tv_sec * 1000ULL + (uint64_t)ts.tv_nsec / 1000000ULL;
     const char *actual_dev_id = target_id_str[0] ? target_id_str : target;
 
-    /* 90ms debounce rejection: drop rapid duplicate press/tap pulses on the same button */
-    if ((action == HW_BTN_ACTION_TAP || action == HW_BTN_ACTION_PRESS) &&
-        s_last_cmd_time_ms > 0 &&
-        strcmp(s_last_device_id, actual_dev_id) == 0 &&
-        strcmp(s_last_cmd_name, command) == 0) {
-        uint64_t elapsed = (now_ms > s_last_cmd_time_ms) ? (now_ms - s_last_cmd_time_ms) : 0;
-        if (elapsed < 90) {
-            pthread_mutex_unlock(&s_hw_cmd_lock);
-            return 0;
+    /* 90ms debounce rejection: drop rapid duplicate press/tap pulses on the same button. The
+     * window runs from the arrival of the previous accepted press or tap: it used to run from
+     * the end of the last send or release, which dropped a real quick second press. */
+    if (action == HW_BTN_ACTION_TAP || action == HW_BTN_ACTION_PRESS) {
+        if (s_last_press_ms > 0 &&
+            strcmp(s_last_press_dev, actual_dev_id) == 0 &&
+            strcmp(s_last_press_cmd, command) == 0) {
+            uint64_t elapsed = (arrival_ms > s_last_press_ms) ? (arrival_ms - s_last_press_ms) : 0;
+            if (elapsed < 90) {
+                pthread_mutex_unlock(&s_hw_cmd_lock);
+                return 0;
+            }
         }
+        s_last_press_ms = arrival_ms;
+        snprintf(s_last_press_dev, sizeof(s_last_press_dev), "%s", actual_dev_id);
+        snprintf(s_last_press_cmd, sizeof(s_last_press_cmd), "%s", command);
     }
 
     if (action != HW_BTN_ACTION_RELEASE && action != HW_BTN_ACTION_REPEAT && s_last_cmd_time_ms > 0) {
@@ -609,10 +587,18 @@ static int hw_device_command_send_match(const char *target, int match_mode, cons
         char pipe_cmd[128] = {0};
         unsigned int page = 0, usage = 0;
 
-        if (strcasecmp(command, "Connect") == 0 || strcasecmp(command, "BT_CONNECT") == 0) {
-            snprintf(pipe_cmd, sizeof(pipe_cmd), "CONNECT %s\n", bdaddr);
-        } else if (strcasecmp(command, "Disconnect") == 0 || strcasecmp(command, "BT_DISCONNECT") == 0) {
-            snprintf(pipe_cmd, sizeof(pipe_cmd), "DISCONNECT\n");
+        if (strcasecmp(command, "Connect") == 0 || strcasecmp(command, "BT_CONNECT") == 0 ||
+            strcasecmp(command, "Disconnect") == 0 || strcasecmp(command, "BT_DISCONNECT") == 0) {
+            /* A command to hub_btstack, not a key: on the key pipe "CONNECT" / "DISCONNECT" were
+               taken for key names and sent as consumer usages 0x0C / 0x0D */
+            int is_connect = strcasecmp(command, "Connect") == 0 || strcasecmp(command, "BT_CONNECT") == 0;
+            if (action == HW_BTN_ACTION_RELEASE || action == HW_BTN_ACTION_REPEAT) {
+                ret = 0; /* once per tap or press: a held key's repeats and its release send nothing */
+            } else {
+                char bt_cmd[64];
+                snprintf(bt_cmd, sizeof(bt_cmd), "%s %s\n", is_connect ? "connect_host" : "disconnect_host", bdaddr);
+                ret = hub_send_btstack_cmd(bt_cmd) == 0 ? 0 : -1;
+            }
         } else {
             int hid_parsed = 0;
             if (sscanf(keycode_str, "HID:%x:%x", &page, &usage) == 2 ||
@@ -721,48 +707,27 @@ static int hw_device_command_send_match(const char *target, int match_mode, cons
     } else if (is_mqtt || strncmp(keycode_str, "G:MQTT", 6) == 0) {
         const char *actual_dev_id_str = target_id_str[0] ? target_id_str : target;
         /* MQTT-type devices: the pulse on the device's own topic (handler registered by
-         * hub_mqtt), plus the button event on the daemon's bus through /api/button-press */
+         * hub_mqtt), plus the button event on the daemon's bus */
         if (g_mqtt_button_handler && action != HW_BTN_ACTION_RELEASE) {
-            if (g_mqtt_button_handler(actual_dev_id_str, dev_name, command) == 0) ret = 0;
+            g_mqtt_button_handler(actual_dev_id_str, dev_name, command);
         }
-        {
-            /* Dispatch MQTT button to hub_daemon on 127.0.0.1:<its port> */
-            int mfd = socket(AF_INET, SOCK_STREAM, 0);
-            if (mfd >= 0) {
-                struct sockaddr_in sin;
-                memset(&sin, 0, sizeof(sin));
-                sin.sin_family = AF_INET;
-                sin.sin_port = htons((uint16_t)g_local_api_port);
-                sin.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-                struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
-                setsockopt(mfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-                setsockopt(mfd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
-                if (connect(mfd, (struct sockaddr *)&sin, sizeof(sin)) == 0) {
-                    char *body = build_button_press_json(actual_dev_id_str, dev_name, command, action);
-                    size_t blen = body ? strlen(body) : 0;
-                    /* headers and body sent separately: a body built into a fixed buffer was cut
-                     * for long device or command names while Content-Length gave its full size */
-                    char hdr[192];
-                    int hl = snprintf(hdr, sizeof(hdr),
-                                      "POST /api/button-press HTTP/1.1\r\n"
-                                      "Host: 127.0.0.1:%d\r\n"
-                                      "Content-Length: %zu\r\n"
-                                      "Content-Type: application/json\r\n"
-                                      "Connection: close\r\n\r\n",
-                                      g_local_api_port, blen);
-                    if (hl > 0 && (size_t)hl < sizeof(hdr) && send_all_fd(mfd, hdr, (size_t)hl) == 0 && blen) {
-                        send_all_fd(mfd, body, blen);
-                    }
-                    if (body) free(body);
-                    char resp[256] = {0};
-                    recv(mfd, resp, sizeof(resp) - 1, 0);
-                    if (strstr(resp, "200 OK") != NULL || strstr(resp, "\"ok\":true") != NULL) {
-                        ret = 0;
-                    }
-                }
-                close(mfd);
+        /* The event as POST /api/button-press emits it for this request (press and release only:
+         * a held key's repeats are not events). It used to be an HTTP request to the daemon's own
+         * port: called from the main loop (WebSocket and MQTT commands, activity steps) nobody
+         * accepted it, so the main loop waited 2 s for every command and reported it as failed
+         * when no broker was connected. */
+        if (action != HW_BTN_ACTION_REPEAT) {
+            cJSON *ev = cJSON_CreateObject();
+            if (ev) {
+                cJSON_AddStringToObject(ev, "button", command);
+                cJSON_AddStringToObject(ev, "action", action == HW_BTN_ACTION_RELEASE ? "release" : "press");
+                cJSON_AddStringToObject(ev, "source", "api");
+                cJSON_AddStringToObject(ev, "deviceId", actual_dev_id_str);
+                cJSON_AddStringToObject(ev, "command", command);
+                hub_events_emit(HUB_EV_BUTTON, ev);
             }
         }
+        ret = 0;
     } else if (keycode_str[0]) {
         if (action == HW_BTN_ACTION_RELEASE) {
             hw_ir_cancel(ir_ports);
@@ -788,6 +753,17 @@ static int hw_device_command_send_match(const char *target, int match_mode, cons
     return ret;
 }
 
+static int hw_device_command_send_match(const char *target, int match_mode, const char *command, int action) {
+    if (!target || !command) return -1;
+
+    /* A copy of the device list, freed here: the cached tree may be replaced by a save meanwhile */
+    cJSON *root = get_device_list_copy();
+    if (!root) return -4;
+    int ret = send_match_in(root, target, match_mode, command, action);
+    cJSON_Delete(root);
+    return ret;
+}
+
 int hw_device_command_send_action(const char *target, int match_mode, const char *command, int action) {
     return hw_device_command_send_match(target, match_mode, command, action);
 }
@@ -804,10 +780,7 @@ int hw_device_command_send_by_name(const char *device_name, const char *command)
     return hw_device_command_send_match(device_name, 2, command, HW_BTN_ACTION_TAP);
 }
 
-int hw_device_exists(const char *target, int match_mode) {
-    if (!target || !target[0]) return 0;
-    cJSON *root = get_device_list_cached();
-    if (!root) return 0;
+static int device_exists_in(cJSON *root, const char *target, int match_mode) {
     cJSON *devs = cJSON_GetObjectItemCaseSensitive(root, "devices");
     if (!devs || !cJSON_IsArray(devs)) return 0;
     const cJSON *dev = NULL;
@@ -832,10 +805,16 @@ int hw_device_exists(const char *target, int match_mode) {
     return 0;
 }
 
-int hw_device_command_exists(const char *target, int match_mode, const char *command) {
-    if (!target || !target[0] || !command || !command[0]) return 0;
-    cJSON *root = get_device_list_cached();
+int hw_device_exists(const char *target, int match_mode) {
+    if (!target || !target[0]) return 0;
+    cJSON *root = get_device_list_copy();
     if (!root) return 0;
+    int found = device_exists_in(root, target, match_mode);
+    cJSON_Delete(root);
+    return found;
+}
+
+static int device_command_exists_in(cJSON *root, const char *target, int match_mode, const char *command) {
     cJSON *devs = cJSON_GetObjectItemCaseSensitive(root, "devices");
     if (!devs || !cJSON_IsArray(devs)) return 0;
     const cJSON *target_dev = NULL;
@@ -912,6 +891,15 @@ int hw_device_command_exists(const char *target, int match_mode, const char *com
     return 0;
 }
 
+int hw_device_command_exists(const char *target, int match_mode, const char *command) {
+    if (!target || !target[0] || !command || !command[0]) return 0;
+    cJSON *root = get_device_list_copy();
+    if (!root) return 0;
+    int found = device_command_exists_in(root, target, match_mode, command);
+    cJSON_Delete(root);
+    return found;
+}
+
 int hw_bthid_send_report(const uint8_t *report, size_t len) {
     if (!report || len == 0) return -1;
 
@@ -932,11 +920,7 @@ int hw_bthid_send_report(const uint8_t *report, size_t len) {
     return -1;
 }
 
-int hw_device_bt_host(const char *device_id, char *out, size_t outlen) {
-    if (!device_id || !device_id[0] || !out || outlen < 18) return 0;
-    out[0] = '\0';
-    /* BORROWED from resource_cache - DO NOT free or cJSON_Delete */
-    cJSON *root = get_device_list_cached();
+static int device_bt_host_in(cJSON *root, const char *device_id, char *out, size_t outlen) {
     cJSON *devs = root ? cJSON_GetObjectItemCaseSensitive(root, "devices") : NULL;
     if (!devs || !cJSON_IsArray(devs)) return 0;
     cJSON *dev = NULL;
@@ -970,6 +954,15 @@ int hw_device_bt_host(const char *device_id, char *out, size_t outlen) {
         return 1;
     }
     return 0;
+}
+
+int hw_device_bt_host(const char *device_id, char *out, size_t outlen) {
+    if (!device_id || !device_id[0] || !out || outlen < 18) return 0;
+    out[0] = '\0';
+    cJSON *root = get_device_list_copy();
+    int found = device_bt_host_in(root, device_id, out, outlen);
+    cJSON_Delete(root);
+    return found;
 }
 
 int hw_device_bt_disconnect(const char *device_id) {

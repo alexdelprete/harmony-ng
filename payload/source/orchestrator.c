@@ -22,6 +22,8 @@
 
 #define PRIMARY_CURRENT_ACT_FILE "/data/harmony/current_activity"
 
+static int activity_known(const char *id);
+
 static orch_state_t g_state = ORCH_STATE_IDLE;
 static char g_current_act[32] = ORCH_POWEROFF_ID;
 static char g_target_act[32] = ORCH_POWEROFF_ID;
@@ -111,13 +113,15 @@ static void load_current_activity(void) {
     }
 }
 
-/* Activity state event (spec 3.2): one HUB_EV_ACTIVITY_STATE per change of state, activity or
- * queued request, same shape as the WebSocket get_state reply and GET /api/activity. The first
- * call (from orch_init) always emits, so sinks have a baseline. Callers may hold g_act_lock;
- * the queue paths call set_state(g_state) under it to publish a queue change alone. */
+/* Activity state event (spec 3.2): one HUB_EV_ACTIVITY_STATE per change of state, activity,
+ * queued request or sending flag, same shape as the WebSocket get_state reply and GET
+ * /api/activity. The first call (from orch_init) always emits, so sinks have a baseline. Callers
+ * may hold g_act_lock; the queue paths call set_state(g_state) under it to publish a queue or
+ * sending change alone. */
 static int g_last_emitted_state = -1;
 static char g_last_emitted_act[32] = "";
 static char g_last_emitted_queued[32] = "";
+static int g_last_emitted_sending = -1;
 
 static const char *orch_state_name(orch_state_t st) {
     switch (st) {
@@ -128,16 +132,21 @@ static const char *orch_state_name(orch_state_t st) {
     }
 }
 
-static void set_state(orch_state_t st) {
+/* emit 0: the state changes without an event, for a transition whose steps are not queued yet
+ * (its event follows once they are, so it carries the right sending flag) */
+static void set_state_ex(orch_state_t st, int emit) {
     g_state = st;
     FILE *fs = fopen("/tmp/activity_state", "w");
     if (fs) {
         fprintf(fs, "%s\n", orch_state_name(st));
         fclose(fs);
     }
+    if (!emit) return;
+    int sending = (g_queue_len > 0 || g_bg_len > 0) ? 1 : 0;
     if ((int)st == g_last_emitted_state && strcmp(g_current_act, g_last_emitted_act) == 0 &&
-        strcmp(g_queued_act, g_last_emitted_queued) == 0) return;
+        strcmp(g_queued_act, g_last_emitted_queued) == 0 && sending == g_last_emitted_sending) return;
     g_last_emitted_state = (int)st;
+    g_last_emitted_sending = sending;
     strncpy(g_last_emitted_act, g_current_act, sizeof(g_last_emitted_act) - 1);
     g_last_emitted_act[sizeof(g_last_emitted_act) - 1] = '\0';
     strncpy(g_last_emitted_queued, g_queued_act, sizeof(g_last_emitted_queued) - 1);
@@ -148,11 +157,15 @@ static void set_state(orch_state_t st) {
     cJSON_AddNumberToObject(p, "state", (int)st);
     cJSON_AddStringToObject(p, "stateName", orch_state_name(st));
     cJSON_AddBoolToObject(p, "busy", (st == ORCH_STATE_STARTING || st == ORCH_STATE_STOPPING) ? 1 : 0);
-    cJSON_AddBoolToObject(p, "sending", (g_queue_len > 0 || g_bg_len > 0) ? 1 : 0);
+    cJSON_AddBoolToObject(p, "sending", sending);
     /* the request queued behind the running transition, null when none (spec 3.2, #105) */
     if (g_queued_act[0]) cJSON_AddStringToObject(p, "queued", g_queued_act);
     else cJSON_AddNullToObject(p, "queued");
     hub_events_emit(HUB_EV_ACTIVITY_STATE, p);
+}
+
+static void set_state(orch_state_t st) {
+    set_state_ex(st, 1);
 }
 
 int orch_init(void) {
@@ -163,6 +176,12 @@ int orch_init(void) {
     memset(g_bg_queue, 0, sizeof(g_bg_queue));
     pthread_mutex_lock(&g_act_lock);
     load_current_activity();
+    /* The saved activity may no longer exist (deleted, or a restored configuration without it):
+     * staying "running" in it left a power off with nothing to send */
+    if (!activity_known(g_current_act)) {
+        printf("[!] Orch: saved activity %s is not configured, starting as PowerOff\n", g_current_act);
+        snprintf(g_current_act, sizeof(g_current_act), "%s", ORCH_POWEROFF_ID);
+    }
     write_activity_mirror(g_current_act);
     clear_activity_target();
     /* Emits the baseline activity_state event */
@@ -191,17 +210,22 @@ int orch_get_queued_activity(char *buf, size_t len) {
 /* True when id names a configured activity (PowerOff's "-1" included) */
 static int activity_known(const char *id) {
     if (strcmp(id, ORCH_POWEROFF_ID) == 0) return 1;
-    cJSON *root = config_store_get_activities_json();
+    cJSON *root = config_store_activities_copy();
     const cJSON *list = root ? (cJSON_IsArray(root) ? root : cJSON_GetObjectItemCaseSensitive(root, "activities")) : NULL;
     const cJSON *a = NULL;
+    int found = 0;
     cJSON_ArrayForEach(a, list) {
         const cJSON *j = cJSON_GetObjectItemCaseSensitive(a, "id");
         char aid[32] = "";
         if (j && cJSON_IsString(j) && j->valuestring) snprintf(aid, sizeof(aid), "%s", j->valuestring);
         else if (j && cJSON_IsNumber(j)) snprintf(aid, sizeof(aid), "%ld", (long)j->valuedouble);
-        if (strcmp(aid, id) == 0) return 1;
+        if (strcmp(aid, id) == 0) {
+            found = 1;
+            break;
+        }
     }
-    return 0;
+    cJSON_Delete(root);
+    return found;
 }
 
 /* After a transition completed: start the queued request, if any */
@@ -225,7 +249,13 @@ static void orch_start_queued(void) {
     }
     printf("[*] Orch: starting the queued request %s\n", next);
     fflush(stdout);
-    orch_switch_activity(next, 0, NULL, 0);
+    if (orch_switch_activity(next, 0, NULL, 0) < 0) {
+        /* deleted since it was queued, or its transition cannot be built: nothing published the
+         * emptied queue yet */
+        pthread_mutex_lock(&g_act_lock);
+        set_state(g_state);
+        pthread_mutex_unlock(&g_act_lock);
+    }
 }
 
 int orch_is_sending(void) {
@@ -254,6 +284,11 @@ orch_state_t orch_get_state(void) {
 void orch_cancel(void) {
     hw_ir_cancel(IR_PORT_ALL);
     clear_activity_target();
+    /* empty the queues first, so the state event below says nothing is being sent */
+    g_queue_len = 0;
+    g_current_step = 0;
+    g_bg_len = 0;
+    memset(g_bg_queue, 0, sizeof(g_bg_queue));
     pthread_mutex_lock(&g_act_lock);
     g_queued_act[0] = '\0'; /* a cancel is the user's last word too */
     /* Only a power off in progress ends as PowerOff. g_target_act is "-1" by default and stays so
@@ -270,10 +305,6 @@ void orch_cancel(void) {
         write_activity_mirror(g_current_act); /* a cancelled start: back to the activity the Hub is in */
         pthread_mutex_unlock(&g_act_lock);
     }
-    g_queue_len = 0;
-    g_current_step = 0;
-    g_bg_len = 0;
-    memset(g_bg_queue, 0, sizeof(g_bg_queue));
     if (g_progress_cb) {
         g_progress_cb(g_current_act, g_state, 0, 0, "Sequence cancelled", g_cb_user_data);
     }
@@ -321,17 +352,21 @@ static void execute_step(const orch_step_t *step) {
             if (strcasecmp(step->command_name, "CONNECT") == 0 ||
                 strcasecmp(step->command_name, "RECONNECT") == 0 ||
                 strcasecmp(step->command_name, "bt_connect") == 0) {
-                if (step->device_id[0] && strncmp(step->device_id, "bt_", 3) != 0) {
-                    char cmd[128];
-                    snprintf(cmd, sizeof(cmd), "CONNECT %s", step->device_id);
+                /* hub_btstack's commands are connect_host / disconnect_host [<bdaddr>]; it has no
+                   CONNECT or DISCONNECT and dropped them */
+                char addr[32];
+                if (step->device_id[0] && strncmp(step->device_id, "bt_", 3) != 0 &&
+                    hw_device_bt_host(step->device_id, addr, sizeof(addr))) {
+                    char cmd[64];
+                    snprintf(cmd, sizeof(cmd), "connect_host %s", addr);
                     hub_send_btstack_cmd(cmd);
                 } else {
-                    hub_send_btstack_cmd("CONNECT");
+                    hub_send_btstack_cmd("connect_host");
                 }
             } else if (strcasecmp(step->command_name, "DISCONNECT") == 0) {
                 /* With a device: close that device's host link (power off, see orchestrator_queue.c) */
                 if (step->device_id[0]) hw_device_bt_disconnect(step->device_id);
-                else hub_send_btstack_cmd("DISCONNECT");
+                else hub_send_btstack_cmd("disconnect_host");
             } else {
                 char bt_reply[256];
                 run_bt_saved_script("btkeyboard", "", step->command_name, 50, bt_reply, sizeof(bt_reply));
@@ -365,6 +400,12 @@ int orch_tick(void) {
         }
         if (!any_pending) {
             g_bg_len = 0;
+            if (g_queue_len == 0) {
+                /* the last background step went out: publish sending false */
+                pthread_mutex_lock(&g_act_lock);
+                set_state(g_state);
+                pthread_mutex_unlock(&g_act_lock);
+            }
         }
     }
 
@@ -416,8 +457,11 @@ int orch_tick(void) {
             execute_step(step);
         }
 
+        /* The delay runs from the end of the step: a send blocks for the length of its signal,
+         * and counting from before it shortened the gap to the next step (two equal commands
+         * then fell under the dispatcher's same-button filter and the second was dropped). */
         uint32_t delay = step->delay_ms ? step->delay_ms : 50;
-        g_next_deadline_ms = now + delay;
+        g_next_deadline_ms = get_now_ms() + delay;
 
         if (g_progress_cb) {
             g_progress_cb(g_target_act, g_state, (int)g_current_step + 1,
@@ -427,16 +471,20 @@ int orch_tick(void) {
         return 1;
     }
 
+    /* the main queue is done: empty it before the state event, so the event says whether
+     * background steps are still to be sent */
+    g_queue_len = 0;
+    g_current_step = 0;
+    pthread_mutex_lock(&g_act_lock);
     if (g_state != ORCH_STATE_RUNNING && g_state != ORCH_STATE_IDLE) {
-        pthread_mutex_lock(&g_act_lock);
         strncpy(g_current_act, g_target_act, sizeof(g_current_act) - 1);
         save_current_activity(g_current_act);
         set_state((strcmp(g_current_act, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING);
-        pthread_mutex_unlock(&g_act_lock);
+    } else {
+        set_state(g_state); /* after a Switched marker: publishes sending false when nothing is left */
     }
+    pthread_mutex_unlock(&g_act_lock);
     clear_activity_target();
-    g_queue_len = 0;
-    g_current_step = 0;
 
     if (g_progress_cb) {
         g_progress_cb(g_current_act, g_state, 0, 0, "Transition completed", g_cb_user_data);
@@ -553,6 +601,24 @@ int orch_switch_activity(const char *target_activity_id, int dry_run,
         }
         return 1;
     }
+    /* The activity the Hub is already in, and no transition runs: nothing to do. Going on cleared
+     * the background queue below, so a second press right after the Switched marker dropped the
+     * tail of the sequence that had just run (the input selection after a start, the devices the
+     * stop tail switches off), and a power off while off sent stop_reconnect again. */
+    if (!dry_run && strcmp(target_activity_id, g_current_act) == 0) {
+        /* The events stay those of an empty transition (starting or stopping, then running or
+         * idle): the Logitech shim answers a runactivity on them. */
+        int off = (strcmp(target_activity_id, ORCH_POWEROFF_ID) == 0);
+        set_state(off ? ORCH_STATE_STOPPING : ORCH_STATE_STARTING);
+        set_state(off ? ORCH_STATE_IDLE : ORCH_STATE_RUNNING);
+        pthread_mutex_unlock(&g_act_lock);
+        printf("[*] Orch: %s is the current activity, nothing to do\n", target_activity_id);
+        fflush(stdout);
+        if (g_progress_cb) {
+            g_progress_cb(target_activity_id, g_state, 0, 0, "Transition completed", g_cb_user_data);
+        }
+        return 0;
+    }
     pthread_mutex_unlock(&g_act_lock);
 
     if (dry_run) {
@@ -579,8 +645,9 @@ int orch_switch_activity(const char *target_activity_id, int dry_run,
     memset(g_bg_queue, 0, sizeof(g_bg_queue));
 
     strncpy(g_target_act, target_activity_id, sizeof(g_target_act) - 1);
-    set_state((strcmp(target_activity_id, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_STOPPING : ORCH_STATE_STARTING);
-    
+    /* busy from here on; the event follows once the steps are queued */
+    set_state_ex((strcmp(target_activity_id, ORCH_POWEROFF_ID) == 0) ? ORCH_STATE_STOPPING : ORCH_STATE_STARTING, 0);
+
     write_activity_target(target_activity_id);
     if (strcmp(target_activity_id, ORCH_POWEROFF_ID) == 0) {
         hub_send_btstack_cmd("stop_reconnect\n");
@@ -596,6 +663,9 @@ int orch_switch_activity(const char *target_activity_id, int dry_run,
 
     if (g_queue_len == 0) {
         pthread_mutex_lock(&g_act_lock);
+        /* nothing to send: still publish starting (or stopping) before running (or idle), so a
+         * client waiting for the end of the transition sees it, as for any other request */
+        set_state(g_state);
         strncpy(g_current_act, g_target_act, sizeof(g_current_act) - 1);
         save_current_activity(g_current_act);
         clear_activity_target();
@@ -607,6 +677,10 @@ int orch_switch_activity(const char *target_activity_id, int dry_run,
         }
         return 0;
     }
+
+    pthread_mutex_lock(&g_act_lock);
+    set_state(g_state); /* starting or stopping, with sending true */
+    pthread_mutex_unlock(&g_act_lock);
 
     if (g_progress_cb) {
         g_progress_cb(g_target_act, g_state, 0, (int)g_queue_len, "Starting switch...", g_cb_user_data);
@@ -673,10 +747,11 @@ int orch_repair_activity(const char *act_id, int dry_run, orch_toggle_t *toggles
         g_bg_len = 0;
         memset(g_bg_queue, 0, sizeof(g_bg_queue));
         strncpy(g_target_act, act_id, sizeof(g_target_act) - 1);
-        /* The queue returns to RUNNING after its last main step; with none, stay RUNNING */
-        if (m > 0) set_state(ORCH_STATE_STARTING);
         orch_enqueue_steps(main_steps, m);
         orch_enqueue_bg_steps(bg_steps, b);
+        /* The queue returns to RUNNING after its last main step; with none, stay RUNNING. Set
+         * after the steps are queued, so the event carries sending true. */
+        set_state(m > 0 ? ORCH_STATE_STARTING : g_state);
         if (g_progress_cb) {
             g_progress_cb(g_target_act, g_state, 0, (int)m, "Help: re-sending the activity's commands", g_cb_user_data);
         }

@@ -54,6 +54,22 @@ def get_file_md5(path: pathlib.Path) -> str:
     return h.hexdigest().lower()
 
 
+def parse_space_reply(reply: str) -> tuple[int | None, int]:
+    """Parse the "<avail> <total> <old>" reply of the free space check.
+
+    Returns (free KB or None when unknown, KB the old copy frees). A filesystem
+    reporting 0 KB in total (a tmpfs mounted without size= on the Hub's 2.6.31
+    kernel, e.g. /tmp) has no usable figure, so its free space is unknown.
+    """
+    parts = reply.strip().split()
+    avail_kb = int(parts[0]) if parts and parts[0].isdigit() else None
+    total_kb = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    old_kb = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+    if total_kb == 0:
+        avail_kb = None
+    return avail_kb, old_kb
+
+
 class HubDeployer:
     def __init__(
         self,
@@ -79,6 +95,8 @@ class HubDeployer:
 
         self.deploy_failures: list[str] = []
         self.remote_hashes: dict[str, str] = {}
+        # Set once the Hub's services were stopped, cleared when the last step started them again
+        self.services_stopped = False
 
         # Resolve paths
         self.script_dir = pathlib.Path(__file__).resolve().parent
@@ -152,15 +170,12 @@ class HubDeployer:
         size_kb = (src.stat().st_size + 1023) // 1024
         space_check = (
             f"mkdir -p '{ddir}' 2>/dev/null; rm -f '{dst}.new' 2>/dev/null; "
-            f"a=$(df -k '{ddir}' 2>/dev/null | awk 'END {{print $(NF-2)}}'); o=0; "
+            f"a=$(df -k '{ddir}' 2>/dev/null | awk 'END {{print $(NF-2), $(NF-4)}}'); o=0; "
             f"[ -f '{dst}' ] && o=$(ls -l '{dst}' 2>/dev/null | awk '{{print int(($5+1023)/1024)}}'); "
-            f'echo "${{a:-unknown}} ${{o:-0}}"'
+            f'echo "${{a:-unknown unknown}} ${{o:-0}}"'
         )
         res = self.run_ssh(space_check)
-        parts = res.stdout.strip().split()
-        avail_kb_str = parts[0] if parts else ""
-        old_kb = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-        avail_kb = int(avail_kb_str) if avail_kb_str.isdigit() else None
+        avail_kb, old_kb = parse_space_reply(res.stdout)
 
         need_kb = size_kb + 32  # flash headroom
         if avail_kb is None or avail_kb >= need_kb:
@@ -222,6 +237,41 @@ class HubDeployer:
                 self.remote_hashes[parts[1]] = parts[0].lower()
 
     def deploy(self) -> bool:
+        """Run the deployment. Whatever ends it early after the services were stopped (a failed
+        web UI build, a missing npm, Ctrl+C, an exception), the services are started again."""
+        try:
+            return self._deploy()
+        finally:
+            if self.services_stopped:
+                print("[!] Deployment ended early: starting the Hub services again...", file=sys.stderr)
+                self.run_ssh(self.RESTART_CMD)
+                procs = self.wait_for_services()
+                if procs:
+                    print(f"[!] Hub services running again (PIDs: {procs}), with the files deployed so far.", file=sys.stderr)
+                else:
+                    print(f"[-] Hub services are NOT running. Start them with: ssh {self.hub_user}@{self.hub_host} /data/harmony/init.sh start", file=sys.stderr)
+
+    def wait_for_services(self) -> str:
+        """PIDs of the Hub daemons once they run (up to about 11 s), or "" """
+        for attempt in range(5):
+            time.sleep(3 if attempt == 0 else 2)
+            procs = self.run_ssh("pidof hub_daemon hub_rf hub_btstack 2>/dev/null || true").stdout.strip()
+            if procs:
+                return procs
+        return ""
+
+    RESTART_CMD = (
+        "chmod +x /data/harmony/bin/* /data/harmony/*.sh /data/harmony/init.sh 2>/dev/null || true; "
+        "mkdir -p /data/harmony/scripts 2>/dev/null || true; "
+        "ln -sf /data/harmony/init.sh /data/harmony/scripts/init.sh 2>/dev/null || true; "
+        "ln -sf /data/harmony/bin/hub_sync /data/harmony/bin/sync 2>/dev/null || true; "
+        "ln -sf /data/harmony/bin/hub_sync /cache/bin/sync 2>/dev/null || true; "
+        "/data/harmony/bin/hub_sync 2>/dev/null || /cache/bin/sync 2>/dev/null || sync 2>/dev/null || true; "
+        "rm -f /tmp/harmony_stop 2>/dev/null || true; "
+        "if [ -x /data/harmony/init.sh ]; then /data/harmony/init.sh restart >/dev/null 2>&1 & fi"
+    )
+
+    def _deploy(self) -> bool:
         print("=== Harmony Hub Firmware Deployment ===")
         print(f"Target Hub: {self.hub_host}")
         print(f"SSH key: {self.ssh_key or '(ssh defaults)'}")
@@ -276,6 +326,7 @@ class HubDeployer:
                 "/data/harmony/bin/hub_sync 2>/dev/null || /cache/bin/sync 2>/dev/null || sync 2>/dev/null || true"
             )
             if not self.dry_skip("stop hub services (init.sh stop)"):
+                self.services_stopped = True
                 self.run_ssh(stop_cmd)
 
             # 3. Migrate legacy codex paths
@@ -587,28 +638,20 @@ class HubDeployer:
                 "ln -sf /data/harmony/bin/hub_sync /data/harmony/bin/sync 2>/dev/null || true; "
                 "(sleep 2 && /data/harmony/safe_reboot.sh) >/dev/null 2>&1 &"
             )
+            self.services_stopped = False
             self.run_ssh(reboot_cmd)
             print(f"=== Deployment to {self.hub_host} Complete! Hub is rebooting safely. ===")
         else:
             print("[5/5] Flushing NOR flash buffers and hot-restarting services (no reboot)...")
-            restart_cmd = (
-                "chmod +x /data/harmony/bin/* /data/harmony/*.sh /data/harmony/init.sh 2>/dev/null || true; "
-                "mkdir -p /data/harmony/scripts 2>/dev/null || true; "
-                "ln -sf /data/harmony/init.sh /data/harmony/scripts/init.sh 2>/dev/null || true; "
-                "ln -sf /data/harmony/bin/hub_sync /data/harmony/bin/sync 2>/dev/null || true; "
-                "ln -sf /data/harmony/bin/hub_sync /cache/bin/sync 2>/dev/null || true; "
-                "/data/harmony/bin/hub_sync 2>/dev/null || /cache/bin/sync 2>/dev/null || sync 2>/dev/null || true; "
-                "rm -f /tmp/harmony_stop 2>/dev/null || true; "
-                "if [ -x /data/harmony/init.sh ]; then /data/harmony/init.sh restart >/dev/null 2>&1 & fi"
-            )
-            self.run_ssh(restart_cmd)
-            time.sleep(3)
-            procs_res = self.run_ssh("pidof hub_daemon hub_rf hub_btstack 2>/dev/null || true")
-            procs = procs_res.stdout.strip()
+            self.services_stopped = False
+            self.run_ssh(self.RESTART_CMD)
+            procs = self.wait_for_services()
             if procs:
                 print(f"=== Deployment to {self.hub_host} Complete! Hub services running (PIDs: {procs}). ===")
             else:
-                print(f"=== Deployment to {self.hub_host} Complete! Services started. ===")
+                print(f"[-] Deployment to {self.hub_host}: files copied, but no Hub service is running "
+                      f"(pidof found none). Check /tmp/harmony-init.log on the Hub.", file=sys.stderr)
+                return False
 
         if self.deploy_failures:
             print("[-] These files were not deployed; Hub runs with old copies:", file=sys.stderr)
@@ -668,4 +711,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    if sys.version_info < (3, 11):
+        sys.exit(f"This tool needs Python 3.11 or newer (this is Python {sys.version.split()[0]}).")
     main()

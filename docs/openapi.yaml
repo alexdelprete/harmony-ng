@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: Harmony Hub Control API
-  version: 2.4.0
+  version: 2.4.2
   description: |
     REST and WebSocket API for the open-source **Harmony Hub** firmware and **Harmony remote** RF daemon.
     
@@ -951,6 +951,9 @@ paths:
                 mqttTopic: {type: string}
                 mqttEnabled: {type: boolean}
                 mqttPulse: {type: integer}
+                interDeviceDelay: {type: integer, minimum: 0, maximum: 10000, default: 500, description: "ms waited before a command to this device after one to another device"}
+                interKeyDelay: {type: integer, minimum: 0, maximum: 10000, default: 100, description: "ms between two different commands to this device"}
+                holdInterKeyDelay: {type: integer, minimum: 0, maximum: 10000, default: 200, description: "ms between repeats of the same command"}
                 bt_auto_reconnect: {type: boolean, description: "Auto-reconnect Bluetooth device on activity start"}
                 bt_reconnect_duration_sec: {type: integer, default: 30, description: "Bluetooth reconnect attempt timeout"}
                 bt_reconnect_delay_sec: {type: integer, default: 0, description: "Delay in seconds before attempting Bluetooth reconnection"}
@@ -1260,7 +1263,8 @@ paths:
       summary: Answer help power toggle prompt
       description: |
         Answers the question for one device of the last Help. "on": false sends that device's
-        power toggle; "on": true sends nothing. Each device takes one answer.
+        power toggle; "on": true sends nothing. Each device takes one answer. The questions are
+        void once the Hub left the Help's activity or after 5 minutes (409).
       requestBody:
         required: true
         content:
@@ -1288,6 +1292,8 @@ paths:
                 sent: true
         '404':
           description: Device is not waiting for a Help answer
+        '409':
+          description: The Help question is no longer valid (the Hub left the Help's activity, or it is older than 5 minutes)
 
   /api/poweroff:
     post:
@@ -1427,6 +1433,7 @@ paths:
       tags:
         - Activities
       summary: Test sequence execution
+      description: Runs the steps one after the other before answering. Each step waits its delay, at most 3 s; at most 64 steps.
       requestBody:
         required: true
         content:
@@ -1452,6 +1459,13 @@ paths:
               example:
                 ok: true
                 executed: 2
+        '400':
+          description: More than 64 steps (the most a saved sequence can hold)
+          content:
+            application/json:
+              example:
+                ok: false
+                error: Too many steps (limit 64)
 
   /api/sync:
     post:

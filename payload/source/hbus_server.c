@@ -302,17 +302,22 @@ static const char *param_str(const cJSON *params, const char *key, char *buf, si
 
 static int activity_exists(const char *id) {
     if (strcmp(id, ORCH_POWEROFF_ID) == 0) return 1;
-    cJSON *root = config_store_get_activities_json();
+    cJSON *root = config_store_activities_copy();
     cJSON *list = root ? (cJSON_IsArray(root) ? root : cJSON_GetObjectItemCaseSensitive(root, "activities")) : NULL;
     cJSON *a = NULL;
+    int found = 0;
     cJSON_ArrayForEach(a, list) {
         const cJSON *j = cJSON_GetObjectItemCaseSensitive(a, "id");
         char aid[32] = "";
         if (j && cJSON_IsString(j) && j->valuestring) snprintf(aid, sizeof(aid), "%s", j->valuestring);
         else if (j && cJSON_IsNumber(j)) snprintf(aid, sizeof(aid), "%ld", (long)j->valuedouble);
-        if (strcmp(aid, id) == 0) return 1;
+        if (strcmp(aid, id) == 0) {
+            found = 1;
+            break;
+        }
     }
-    return 0;
+    cJSON_Delete(root);
+    return found;
 }
 
 static cJSON *cmd_runactivity(int fd, const char *cmd, const cJSON *id, const cJSON *params) {
@@ -386,12 +391,8 @@ static cJSON *cmd_holdaction(const char *cmd, const cJSON *id, const cJSON *para
 }
 
 /* The running activity's channel device: the first of its devices with a digit command */
-static int channel_device(char *out, size_t cap) {
-    const char *cur = orch_get_current_activity();
-    if (!cur || !cur[0] || strcmp(cur, ORCH_POWEROFF_ID) == 0) return 0;
-    cJSON *aroot = config_store_get_activities_json();
+static int channel_device_in(cJSON *aroot, cJSON *droot, const char *cur, char *out, size_t cap) {
     cJSON *acts = aroot ? (cJSON_IsArray(aroot) ? aroot : cJSON_GetObjectItemCaseSensitive(aroot, "activities")) : NULL;
-    cJSON *droot = config_store_get_devices_json();
     cJSON *devs = droot ? (cJSON_IsArray(droot) ? droot : cJSON_GetObjectItemCaseSensitive(droot, "devices")) : NULL;
     cJSON *a = NULL;
     cJSON_ArrayForEach(a, acts) {
@@ -429,6 +430,17 @@ static int channel_device(char *out, size_t cap) {
         return 0;
     }
     return 0;
+}
+
+static int channel_device(char *out, size_t cap) {
+    const char *cur = orch_get_current_activity();
+    if (!cur || !cur[0] || strcmp(cur, ORCH_POWEROFF_ID) == 0) return 0;
+    cJSON *aroot = config_store_activities_copy();
+    cJSON *droot = config_store_devices_copy();
+    int found = channel_device_in(aroot, droot, cur, out, cap);
+    cJSON_Delete(aroot);
+    cJSON_Delete(droot);
+    return found;
 }
 
 static cJSON *cmd_changechannel(const char *cmd, const cJSON *id, const cJSON *params) {
@@ -564,8 +576,18 @@ void hbus_event_sink(const hub_event_t *ev, void *user) {
         const cJSON *sj = cJSON_GetObjectItemCaseSensitive(p, "state");
         const cJSON *aj = cJSON_GetObjectItemCaseSensitive(p, "activity");
         int state = (sj && cJSON_IsNumber(sj)) ? sj->valueint : 0;
-        if (state != ORCH_STATE_RUNNING && state != ORCH_STATE_IDLE) return;
         const char *cur = (aj && cJSON_IsString(aj)) ? aj->valuestring : ORCH_POWEROFF_ID;
+        /* A running or idle event that follows another one for the same activity only reports a
+         * change of the sending flag or of the queued request: no transition finished, so the
+         * legacy clients get no second "finished". */
+        static int s_prev_state = -1;
+        static char s_prev_act[32] = "";
+        int settled_before = (s_prev_state == ORCH_STATE_RUNNING || s_prev_state == ORCH_STATE_IDLE) &&
+                             strcmp(s_prev_act, cur) == 0;
+        s_prev_state = state;
+        snprintf(s_prev_act, sizeof(s_prev_act), "%s", cur);
+        if (state != ORCH_STATE_RUNNING && state != ORCH_STATE_IDLE) return;
+        if (settled_before) return;
         char num[32];
         if (strcmp(cur, ORCH_POWEROFF_ID) == 0) snprintf(num, sizeof(num), "-1");
         else hbus_numeric_id(cur, num, sizeof(num));
@@ -656,6 +678,39 @@ static cJSON *provision_reply(const cJSON *req) {
     return r;
 }
 
+/* Value of header `name` (case-insensitive) in the request head; 0 when absent */
+static int hbus_header(const char *req, const char *name, char *out, size_t out_len) {
+    size_t nl = strlen(name);
+    const char *line = strstr(req, "\r\n");
+    while (line && line[2] != '\r' && line[2] != '\0') {
+        line += 2;
+        if (strncasecmp(line, name, nl) == 0 && line[nl] == ':') {
+            const char *v = line + nl + 1;
+            while (*v == ' ' || *v == '\t') v++;
+            size_t n = strcspn(v, "\r\n");
+            if (n >= out_len) n = out_len - 1;
+            memcpy(out, v, n);
+            out[n] = '\0';
+            return 1;
+        }
+        line = strstr(line, "\r\n");
+    }
+    return 0;
+}
+
+/* Browsers send Origin with a WebSocket upgrade but do not apply the same-origin policy to it, so
+ * without this check any web page could drive the shim (cross-site WebSocket hijacking). Clients
+ * outside a browser (aioharmony / Home Assistant, scripts) send no Origin and are not affected;
+ * a page served from this host and port itself is allowed. */
+static int hbus_origin_allowed(const char *req) {
+    char origin[256], host[256];
+    if (!hbus_header(req, "Origin", origin, sizeof(origin))) return 1;
+    if (!hbus_header(req, "Host", host, sizeof(host))) return 0;
+    const char *o = strstr(origin, "://");
+    o = o ? o + 3 : origin;
+    return strcasecmp(o, host) == 0;
+}
+
 void hbus_handle_client(int cfd) {
     struct timeval tv = { .tv_sec = 5, .tv_usec = 0 };
     setsockopt(cfd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -696,10 +751,13 @@ void hbus_handle_client(int cfd) {
         if (strcmp(route, "/") != 0) {
             send_http(cfd, 404, "Not Found", "text/plain", "");
             close(cfd);
-        } else if (ws_handle_upgrade(cfd, buf) != 0) {
+        } else if (!hbus_origin_allowed(buf)) {
+            printf("[-] HBUS: WebSocket upgrade from another web origin refused\n");
+            send_http(cfd, 403, "Forbidden", "text/plain", "");
+            close(cfd);
+        } else if (ws_handle_upgrade(cfd, buf, 0 /* no rights on the 8089 command channel */, 1) != 0) {
             close(cfd);
         } else {
-            ws_set_client_legacy(cfd, 1);
             pthread_mutex_lock(&g_new_lock);
             if (g_new_count < WS_MAX_CLIENTS) g_new_clients[g_new_count++] = cfd;
             pthread_mutex_unlock(&g_new_lock);

@@ -98,10 +98,10 @@ REMOTE_FALLBACK_SKINS = [111, 112, 102, 105, 99]
 # ==============================================================================
 
 def get_ssl_context() -> ssl.SSLContext:
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
+    """Normal certificate and host name checks. Both the update service and the download host
+    (CloudFront) have valid public certificates; with checks off, anyone on the path could hand
+    the tool a firmware image to flash, together with its MD5 values."""
+    return ssl.create_default_context()
 
 
 def query_latest_firmware(skin_id: int, silent_on_empty: bool = False) -> Optional[dict[str, Any]]:
@@ -519,8 +519,13 @@ def flash_firmware(
                 )
 
             # Stream chunk burst (burst size 5 packets of 62 bytes each = 310 bytes per burst)
-            hid.write_file_chunks(handle_id, img.data, packets_per_chunk=5, progress_callback=progress_cb)
+            written = hid.write_file_chunks(handle_id, img.data, packets_per_chunk=5, progress_callback=progress_cb)
             print()
+            if not written:
+                # Never hand a partly written image to the device's updater
+                print(f"[-] Writing {img.name} failed; device not reset, its current firmware stays.", file=sys.stderr)
+                hid.close_file(handle_id)
+                return False
 
             # Verify checksum on handle
             print(f"[*] Verifying checksum ({img.checksum_type}: {img.checksum_expected})...")
@@ -533,6 +538,11 @@ def flash_firmware(
                 checksum_type=img.checksum_type,
             )
             print(f"[*] Checksum result: {cs_result} (accepted={cs_ok})")
+            if not cs_ok:
+                # The device did not accept the image: never hand it to the updater
+                print(f"[-] Checksum check of {img.name} failed ({cs_result}); device not reset, its current firmware stays.", file=sys.stderr)
+                hid.close_file(handle_id)
+                return False
 
             # Close handle
             print("[*] Closing file handle...")
@@ -690,7 +700,14 @@ def main():
             # Auto-detect for connected Harmony USB device
             print("[*] Auto-detecting connected Harmony USB device...")
             connected_pid = None
-            for pid in [REMOTE_PID, HUB_PID, HUB_PRO_PID]:
+            # Pick the bundle for the device class that flash_firmware() will open below
+            if args.target == "hub":
+                probe_pids = [HUB_PID, HUB_PRO_PID]
+            elif args.target in ("remote", "elite"):
+                probe_pids = [REMOTE_PID]
+            else:
+                probe_pids = [REMOTE_PID, HUB_PID, HUB_PRO_PID]
+            for pid in probe_pids:
                 test_hid = HarmonyHid(pid=pid)
                 if test_hid.open():
                     connected_pid = pid
@@ -728,7 +745,8 @@ def main():
         bundle = parse_hfw2_bundle(fw_path)
         ok = flash_firmware(
             bundle=bundle,
-            target_device=args.target,
+            # the device detected above, so flash_firmware does not probe again
+            target_device=args.target if args.firmware else target,
             dry_run=args.dry_run,
             skip_confirm=args.yes,
         )
@@ -737,4 +755,6 @@ def main():
 
 
 if __name__ == "__main__":
+    if sys.version_info < (3, 11):
+        sys.exit(f"This tool needs Python 3.11 or newer (this is Python {sys.version.split()[0]}).")
     main()

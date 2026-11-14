@@ -97,9 +97,19 @@ static void static_cache_release(struct static_cache_entry *e) {
     pthread_mutex_unlock(&g_static_cache_mutex);
 }
 
+/* Only a path that fits the key whole and is the one plain spelling of its file is cached. A
+ * longer path was stored cut, never matched again and took a new slot at every request; "//"
+ * and "/./" spell the same file in endless ways. Either way a client could fill every slot with
+ * copies of one file, which stay allocated until the file changes. */
+static int static_cache_key_ok(const char *rel_path) {
+    return strlen(rel_path) < sizeof(((struct static_cache_entry *)0)->rel_path) &&
+           !strstr(rel_path, "//") && !strstr(rel_path, "/./");
+}
+
 static void static_cache_insert(const char *rel_path, int is_gzip, const char *mime, const char *data, size_t size,
                                 const char *src_path, const struct stat *src) {
     if (!rel_path || !data || size == 0 || size > STATIC_CACHE_MAX_SIZE || !src_path || !src) return;
+    if (!static_cache_key_ok(rel_path)) return;
     pthread_mutex_lock(&g_static_cache_mutex);
     struct static_cache_entry *slot = NULL;
     for (int i = 0; i < g_static_cache_count; i++) {
@@ -114,7 +124,7 @@ static void static_cache_insert(const char *rel_path, int is_gzip, const char *m
     char *copy = slot ? (char *)malloc(size) : NULL;
     if (copy) {
         memcpy(copy, data, size);
-        snprintf(slot->rel_path, sizeof(slot->rel_path), "%s", rel_path);
+        memcpy(slot->rel_path, rel_path, strlen(rel_path) + 1); /* fits: static_cache_key_ok() */
         snprintf(slot->src_path, sizeof(slot->src_path), "%s", src_path);
         slot->is_gzip = is_gzip;
         slot->data = copy;
@@ -386,37 +396,60 @@ static void http_process_request(int client_fd, const char *req) {
     const char *body = strstr(req, "\r\n\r\n");
     if (body) body += 4;
 
-    /* Handle CORS OPTIONS preflight */
+    /* Handle CORS OPTIONS preflight: only the Hub's own clients (http_origin_is_allowed) get
+     * an Access-Control-Allow-Origin; any other origin is refused, so its browser never sends
+     * the real request. */
     if (strcmp(method, "OPTIONS") == 0) {
-        char origin_buf[128] = "*";
-        const char *orig_hdr = strcasestr(req, "Origin:");
-        if (orig_hdr) {
-            orig_hdr += 7;
-            while (*orig_hdr == ' ' || *orig_hdr == '\t') orig_hdr++;
-            const char *eol = strpbrk(orig_hdr, "\r\n");
-            size_t olen = eol ? (size_t)(eol - orig_hdr) : strlen(orig_hdr);
-            if (olen > 0 && olen < sizeof(origin_buf) - 1) {
-                memcpy(origin_buf, orig_hdr, olen);
-                origin_buf[olen] = '\0';
-            }
+        char origin_buf[160] = "";
+        char host_buf[160] = "";
+        http_header_value(req, "Origin", origin_buf, sizeof(origin_buf));
+        http_header_value(req, "Host", host_buf, sizeof(host_buf));
+        if (origin_buf[0] && http_request_is_cross_site(req)) {
+            const char *refused =
+                "HTTP/1.1 403 Forbidden\r\n"
+                "Content-Length: 0\r\n"
+                "Connection: close\r\n\r\n";
+            send(client_fd, refused, strlen(refused), 0);
+            close(client_fd);
+            return;
         }
         char opt_resp[512];
         snprintf(opt_resp, sizeof(opt_resp),
             "HTTP/1.1 204 No Content\r\n"
             "Access-Control-Allow-Origin: %s\r\n"
+            "Vary: Origin\r\n"
             "Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS\r\n"
             "Access-Control-Allow-Headers: Authorization, Content-Type, X-Requested-With, Accept, Origin\r\n"
             "Access-Control-Max-Age: 86400\r\n"
             "Content-Length: 0\r\n"
             "Connection: close\r\n\r\n",
-            origin_buf);
+            origin_buf[0] ? origin_buf : "*");
         send(client_fd, opt_resp, strlen(opt_resp), 0);
         close(client_fd);
         return;
     }
 
+    /* Requests from other web sites (a page opened in a browser on the LAN) are refused before
+     * any route runs: forms, images and scripts of another site must not drive the Hub. */
+    if (http_request_is_cross_site(req)) {
+        const char *refused =
+            "HTTP/1.1 403 Forbidden\r\n"
+            "Content-Type: application/json\r\n"
+            "Content-Length: 49\r\n"
+            "Connection: close\r\n\r\n"
+            "{\"ok\":false,\"error\":\"Cross-site request refused\"}";
+        send(client_fd, refused, strlen(refused), 0);
+        close(client_fd);
+        return;
+    }
+
     char client_ip[48] = {0};
-    get_client_ip(client_fd, client_ip, sizeof(client_ip));
+    if (get_client_ip(client_fd, client_ip, sizeof(client_ip)) != 0) {
+        /* Peer address unknown (connection already reset): nobody to answer, and the request
+         * must not run with a guessed address. */
+        close(client_fd);
+        return;
+    }
     char auth_user[MAX_USERNAME_LEN] = {0};
     enum http_role auth_role = http_auth_check_request(req, client_ip, method, auth_user, sizeof(auth_user));
 
@@ -512,7 +545,13 @@ void http_handle_client(int client_fd) {
          * (hub_rf, hub_btstack) are admin without one, as for every request. */
         if (ws_is_upgrade_req(init_buf)) {
             char ws_ip[48] = {0};
-            get_client_ip(client_fd, ws_ip, sizeof(ws_ip));
+            if (get_client_ip(client_fd, ws_ip, sizeof(ws_ip)) != 0 || http_request_is_cross_site(init_buf)) {
+                /* Unknown peer address (reset connection), or a page of another web site
+                 * opening a WebSocket to the Hub: refuse before any role is given */
+                close(client_fd);
+                free(init_buf);
+                return;
+            }
             char ws_user[MAX_USERNAME_LEN] = {0};
             enum http_role ws_role = http_auth_check_ws_upgrade(init_buf, ws_ip, ws_user, sizeof(ws_user));
             if (ws_role == ROLE_NONE) {
@@ -522,11 +561,10 @@ void http_handle_client(int client_fd) {
             }
             /* A failed upgrade (bad request, no free client slot, send error) leaves the socket
              * unregistered: close it here, nobody else will */
-            if (ws_handle_upgrade(client_fd, init_buf) != 0) {
+            if (ws_handle_upgrade(client_fd, init_buf, (int)ws_role, 0) != 0) {
                 close(client_fd);
-            } else {
-                ws_set_client_role(client_fd, (int)ws_role);
             }
+            /* registered with its role: the main loop owns the socket now, do not touch it */
             free(init_buf);
             return;
         }

@@ -74,6 +74,20 @@ uint16_t linux_to_harmony_rf_key(int code) {
     }
 }
 
+bool remote_release_held_rf_key(int code) {
+    uint16_t rf_code = linux_to_harmony_rf_key(code);
+    if (rf_code == 0) return false;
+    bool held = false;
+    pthread_mutex_lock(&g_repeat_mutex);
+    if (g_held_rf_code == rf_code) {
+        g_held_rf_code = 0; /* stops the hold repeats */
+        held = true;
+    }
+    pthread_mutex_unlock(&g_repeat_mutex);
+    if (held) rf_send_button_event(rf_code, 0);
+    return held;
+}
+
 void *key_repeat_thread(void *arg) {
     (void)arg;
     while (g_running) {
@@ -625,7 +639,8 @@ void handle_navigation_key(int code, int value) {
                     break;
                 }
             }
-            if (g_confirm_pending_idx >= 0 && get_monotonic_ms() < g_confirm_pending_deadline_ms) {
+            if (g_confirm_pending_idx >= 0 && g_confirm_pending_idx < g_activity_count &&
+                get_monotonic_ms() < g_confirm_pending_deadline_ms) {
                 int idx = g_confirm_pending_idx;
                 g_confirm_pending_idx = -1;
                 g_confirm_pending_deadline_ms = 0;

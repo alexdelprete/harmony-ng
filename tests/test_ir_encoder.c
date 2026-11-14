@@ -6,7 +6,11 @@
  * Build: cc -Ipayload/source tests/test_ir_encoder.c payload/source/ir_encoder.c -o /tmp/test_ir_encoder && /tmp/test_ir_encoder
  */
 #include "ir_encoder.h"
+#include "ir_i2s.h"
 #include <assert.h>
+#include <errno.h>
+#include <signal.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -153,6 +157,18 @@ int main(void) {
     assert(ir_encode_harmony_keycode("20DF10EF", 3, &buf, &len) == 0 && len > 0);
     ir_free_encoded(buf);
     buf = NULL;
+    assert(ir_encode_harmony_keycode("0x20DF10EF", 3, &buf, &len) == 0 && len > 0);
+    ir_free_encoded(buf);
+    buf = NULL;
+    /* a string that is no code at all is not understood (it used to become an NEC frame of its
+     * hex letters): command names that reach this as a fallback, short or long hex, junk */
+    assert(ir_encode_harmony_keycode("FastForward", 3, &buf, &len) == -2 && buf == NULL);
+    assert(ir_encode_harmony_keycode("Favorite", 3, &buf, &len) == -2 && buf == NULL);
+    assert(ir_encode_harmony_keycode("hello", 3, &buf, &len) == -2 && buf == NULL);
+    assert(ir_encode_harmony_keycode("zzz", 3, &buf, &len) == -2 && buf == NULL);
+    assert(ir_encode_harmony_keycode("20DF10", 3, &buf, &len) == -2 && buf == NULL);
+    assert(ir_encode_harmony_keycode("20DF10EF00", 3, &buf, &len) == -2 && buf == NULL);
+    assert(ir_encode_harmony_keycode("20DF 10EF", 3, &buf, &len) == -2 && buf == NULL);
     assert(ir_encode_harmony_keycode("G:HID 16 Bit:()(07000027)():1", 1, &buf, &len) != 0);
     assert(ir_encode_harmony_keycode("G:Unknown 24 Bit:()(0x123456)():3", 3, &buf, &len) != 0);
     assert(ir_encode_harmony_keycode("G:Roku IP:()(Home)():1", 1, &buf, &len) == -5);
@@ -178,6 +194,30 @@ int main(void) {
     wave_add_segment(&xs, &TOSHIBA, 32, 0x011B946B);
     wave_add_segment(&xr, &TOSHIBA_REPEAT, 0, 0);
     check("G:Toshiba 32 Bit:(0x011B946B)(Repeat)():3", 38000, &xs, &xr);
+
+    /* Size limits: a sequence over 10 s is refused (four 0x1FFF8064 us timings also wrapped
+     * the 16-bit word count to 0, which played every word), and so is a bit stream over the
+     * blaster's limit (600 MHz carrier: 1 ns period). Before the limits the last case built a
+     * 31 MB stream; the alarm stops a build that runs away. */
+    alarm(20);
+    buf = NULL;
+    assert(ir_encode_harmony_keycode("F9470P1FFF8064S1FFF8064P1FFF8064S1FFF8064", 1, &buf, &len) != 0);
+    assert(ir_encode_pronto("0000 ffff 0001 0000 ffff ffff", 1, 500, &buf, &len) != 0);
+    uint32_t long_timings[2048];
+    for (int i = 0; i < 2048; i++) long_timings[i] = 65535;
+    assert(ir_encode_raw(38000, long_timings, 2048, 1, &buf, &len) != 0);
+    assert(ir_encode_raw(2000000000U, long_timings, 4, 1, &buf, &len) != 0);
+    uint16_t short_words[4] = { 0x8000 | 9000, 4500, 0x8000 | 560, 30000 };
+    assert(ir_i2s_blast_words(2000000000U, 50, short_words, 4, 7) == -1);
+    assert(ir_encode_harmony_keycode("F23C34600P7FFFS7FFFP7FFFS7FFF", 1, &buf, &len) == 0 && len > 0);
+    assert(ir_i2s_blast_blob(buf, len, 7) == -E2BIG);
+    ir_free_encoded(buf);
+    buf = NULL;
+    /* a normal frame is not refused for its size (here it fails later: no /dev/i2s) */
+    assert(ir_encode_harmony_keycode("G:NEC1:()(0x20DF10EF)():3", 3, &buf, &len) == 0);
+    assert(ir_i2s_blast_blob(buf, len, 7) != -E2BIG);
+    ir_free_encoded(buf);
+    alarm(0);
 
     printf("ALL IR ENCODER TESTS PASSED!\n");
     return 0;

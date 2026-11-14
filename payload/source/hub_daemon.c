@@ -16,6 +16,8 @@
 #include "hub_cmd.h"
 #include "hub_ntp.h"
 #include "http_api_system.h"
+#include "http_api_remotes.h"
+#include "hub_key_channel.h"
 #include "harmony_version.h"
 
 #include <stdio.h>
@@ -132,12 +134,50 @@ static void accept_client(int listen_fd, void *(*worker)(void *)) {
     pthread_attr_destroy(&attr);
 }
 
+/* SNTP runs on its own thread: one round asks up to six servers with a 2 s timeout each (plus
+ * the name lookups), and on the main loop that stopped every request, key press and activity
+ * step for 10 s or more, every 20 s while the clock was not set (every boot without an NTP
+ * answer). The main loop only starts a round when one is due and none is running. */
+static pthread_mutex_t g_sntp_lock = PTHREAD_MUTEX_INITIALIZER;
+static int g_sntp_running = 0;
+static char g_sntp_host[128];
+
+static void *sntp_worker(void *arg) {
+    (void)arg;
+    time_t res = sntp_sync_time(g_sntp_host, 1);
+    pthread_mutex_lock(&g_sntp_lock);
+    sntp_sync_done(res);
+    g_sntp_running = 0;
+    pthread_mutex_unlock(&g_sntp_lock);
+    return NULL;
+}
+
+static void sntp_tick_async(const char *host) {
+    pthread_mutex_lock(&g_sntp_lock);
+    if (!g_sntp_running && sntp_sync_due()) {
+        snprintf(g_sntp_host, sizeof(g_sntp_host), "%s", host);
+        pthread_t th;
+        pthread_attr_t attr;
+        pthread_attr_init(&attr);
+        pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+        pthread_attr_setstacksize(&attr, 256 * 1024);
+        if (pthread_create(&th, &attr, sntp_worker, NULL) == 0) g_sntp_running = 1;
+        pthread_attr_destroy(&attr);
+    }
+    pthread_mutex_unlock(&g_sntp_lock);
+}
+
 int main(int argc, char **argv) {
     int port = 8089;
     const char *mfg_file = NULL; /* test harness: a file with the mfg partition layout */
     int mdns_port = MDNS_PORT;   /* test harness: --mdns-port N */
     int legacy_port = HBUS_PORT; /* test harness: --legacy-port N */
     int ssdp_port = SSDP_PORT;   /* test harness: --ssdp-port N */
+#ifdef TEST_HARNESS
+    const char *key_sock = NULL; /* test harness: off unless --key-socket PATH */
+#else
+    const char *key_sock = HUB_KEY_SOCK;
+#endif
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--dry-run") == 0) {
             g_dry_run = 1;
@@ -151,6 +191,8 @@ int main(int argc, char **argv) {
             legacy_port = atoi(argv[++i]);
         } else if (strcmp(argv[i], "--ssdp-port") == 0 && i + 1 < argc) {
             ssdp_port = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--key-socket") == 0 && i + 1 < argc) {
+            key_sock = argv[++i];
         } else if (isdigit((unsigned char)argv[i][0])) {
             port = atoi(argv[i]);
         }
@@ -215,6 +257,11 @@ int main(int argc, char **argv) {
     if (state_watch_start() != 0) {
         fprintf(stderr, "[-] Could not start the state watcher: web UIs will not update live\n");
     }
+    /* Keys from hub_rf, in order on their own thread (hub_key_channel.h); without it hub_rf
+     * falls back to POST /api/ir-send and /api/button-press */
+    if (key_sock && http_api_remotes_key_channel_start(key_sock) != 0) {
+        fprintf(stderr, "[-] Key channel not started: hub_rf keys go over HTTP\n");
+    }
     int srv_fd = http_server_init(port);
     if (srv_fd < 0) {
         fprintf(stderr, "[-] Could not bind HTTP server on port %d: %s\n", port, strerror(errno));
@@ -235,7 +282,6 @@ int main(int argc, char **argv) {
     }
 
     /* 3. MQTT Client */
-    hw_set_local_api_port(port);
     hub_mqtt_init();
 
     printf("[+] Entering master non-blocking event loop...\n");
@@ -247,9 +293,8 @@ int main(int argc, char **argv) {
     int bt_release_tries = 0; /* a counter, not the clock: SNTP may step it by years right after start */
     int bt_release_done = 0;
 
-    /* Initial SNTP network time sync attempt */
+    /* SNTP network time sync: the first round starts on the first pass of the loop */
     const char *ntp_host = (settings.ntp_server[0]) ? settings.ntp_server : "pool.ntp.org";
-    sntp_sync_time(ntp_host, 1);
 
     while (g_running) {
         fd_set rset;
@@ -325,8 +370,8 @@ int main(int argc, char **argv) {
         hbus_tick();
         hub_ssdp_tick();
 
-        /* Tick SNTP network time sync */
-        sntp_tick(ntp_host);
+        /* Tick SNTP network time sync (the round itself runs on a thread) */
+        sntp_tick_async(ntp_host);
 
         /* Tick MQTT client packet reader, keepalive, and periodic state poll */
         hub_mqtt_tick();

@@ -30,10 +30,21 @@ static uint16_t release_cid(void) {
     return get_target_host_hid_cid();
 }
 
+/* The consumer and mouse release timers carry the channel they were armed for and leave
+ * g_host_pending_cid alone: a press made while one of them is armed sets that to its own channel,
+ * and clearing it here would send that press's release to the current target instead. */
+static uint16_t s_crelease_cid = 0;
+static uint16_t s_mrelease_cid = 0;
+
+static uint16_t timer_release_cid(uint16_t armed_cid) {
+    if (cid_connected(armed_cid)) return armed_cid;
+    return get_target_host_hid_cid();
+}
+
 static void host_crelease_timer_handler(btstack_timer_source_t *ts) {
     UNUSED(ts);
-    uint16_t cid = release_cid();
-    g_host_pending_cid = 0; /* consumed: a later release must not resolve to this host */
+    uint16_t cid = timer_release_cid(s_crelease_cid);
+    s_crelease_cid = 0;
     if (cid != 0) {
         uint8_t crelease[4] = {0xa1, 0x02, 0, 0};
         hid_device_send_interrupt_message(cid, crelease, sizeof(crelease));
@@ -42,8 +53,8 @@ static void host_crelease_timer_handler(btstack_timer_source_t *ts) {
 
 static void host_mrelease_timer_handler(btstack_timer_source_t *ts) {
     UNUSED(ts);
-    uint16_t cid = release_cid();
-    g_host_pending_cid = 0;
+    uint16_t cid = timer_release_cid(s_mrelease_cid);
+    s_mrelease_cid = 0;
     if (cid != 0) {
         uint8_t mrelease[6] = {0xa1, 0x03, 0, 0, 0, 0};
         hid_device_send_interrupt_message(cid, mrelease, sizeof(mrelease));
@@ -54,6 +65,16 @@ static void host_mrelease_timer_handler(btstack_timer_source_t *ts) {
 static void host_key_release_timer_handler(btstack_timer_source_t *ts) {
     UNUSED(ts);
     send_host_release_all();
+}
+
+/* (Re)arms the key release timer, always with its handler: a raw report from the FIFO can be
+ * the first key since start, before any other path set the handler, and BTstack calls the
+ * handler of a due timer without checking it */
+void arm_host_key_release_timer(uint32_t timeout_ms) {
+    btstack_run_loop_remove_timer(&g_host_key_release_timer);
+    btstack_run_loop_set_timer_handler(&g_host_key_release_timer, host_key_release_timer_handler);
+    btstack_run_loop_set_timer(&g_host_key_release_timer, timeout_ms);
+    btstack_run_loop_add_timer(&g_host_key_release_timer);
 }
 
 void send_host_release_all(void) {
@@ -84,7 +105,7 @@ void send_host_release_all(void) {
         uint8_t release[10] = {0xa1, 0x01, 0, 0, 0, 0, 0, 0, 0, 0};
         hid_device_send_interrupt_message(cid, release, sizeof(release));
         if (prev_type != 1) {
-            g_host_pending_cid = cid;
+            s_crelease_cid = cid;
             btstack_run_loop_remove_timer(&g_host_crelease_timer);
             btstack_run_loop_set_timer_handler(&g_host_crelease_timer, host_crelease_timer_handler);
             btstack_run_loop_set_timer(&g_host_crelease_timer, 20);
@@ -92,7 +113,7 @@ void send_host_release_all(void) {
         }
     }
     if (g_host_mouse_buttons != 0) {
-        g_host_pending_cid = cid;
+        s_mrelease_cid = cid;
         btstack_run_loop_remove_timer(&g_host_mrelease_timer);
         btstack_run_loop_set_timer_handler(&g_host_mrelease_timer, host_mrelease_timer_handler);
         btstack_run_loop_set_timer(&g_host_mrelease_timer, 40);
@@ -133,10 +154,7 @@ void send_host_mouse_click(uint8_t button) {
     send_host_mouse_report(g_host_mouse_buttons, 0, 0, 0);
     g_host_pending_cid = cid;
     g_host_pending_release_type = 4;
-    btstack_run_loop_remove_timer(&g_host_key_release_timer);
-    btstack_run_loop_set_timer_handler(&g_host_key_release_timer, host_key_release_timer_handler);
-    btstack_run_loop_set_timer(&g_host_key_release_timer, 40);
-    btstack_run_loop_add_timer(&g_host_key_release_timer);
+    arm_host_key_release_timer(40);
 }
 
 void send_host_keyboard_report(uint8_t modifier, uint8_t keycode) {
@@ -166,10 +184,7 @@ void send_host_keyboard_report(uint8_t modifier, uint8_t keycode) {
     hid_device_send_interrupt_message(cid, press, sizeof(press));
     g_host_pending_cid = cid;
     g_host_pending_release_type = 1;
-    btstack_run_loop_remove_timer(&g_host_key_release_timer);
-    btstack_run_loop_set_timer_handler(&g_host_key_release_timer, host_key_release_timer_handler);
-    btstack_run_loop_set_timer(&g_host_key_release_timer, g_host_send_hold_mode ? 10000 : 40);
-    btstack_run_loop_add_timer(&g_host_key_release_timer);
+    arm_host_key_release_timer(g_host_send_hold_mode ? 10000 : 40);
     g_keys_sent++;
     update_bthid_status();
 }
@@ -201,10 +216,7 @@ void send_host_consumer_report(uint16_t usage_id) {
     hid_device_send_interrupt_message(cid, press, sizeof(press));
     g_host_pending_cid = cid;
     g_host_pending_release_type = 2;
-    btstack_run_loop_remove_timer(&g_host_key_release_timer);
-    btstack_run_loop_set_timer_handler(&g_host_key_release_timer, host_key_release_timer_handler);
-    btstack_run_loop_set_timer(&g_host_key_release_timer, g_host_send_hold_mode ? 10000 : 40);
-    btstack_run_loop_add_timer(&g_host_key_release_timer);
+    arm_host_key_release_timer(g_host_send_hold_mode ? 10000 : 40);
     g_keys_sent++;
     update_bthid_status();
 }
@@ -214,8 +226,10 @@ int parse_hex_bytes(const char *hex, uint8_t *out, int max_len) {
     while (*hex && len < max_len) {
         while (*hex == ' ') hex++;
         if (!*hex || *hex == '|' || *hex == '\r' || *hex == '\n') break;
+        /* Two digits per byte: "%02x" also takes a single digit, and stepping 2 from there went
+           past the end of the string */
         unsigned int b = 0;
-        if (sscanf(hex, "%02x", &b) == 1) {
+        if (isxdigit((unsigned char)hex[0]) && isxdigit((unsigned char)hex[1]) && sscanf(hex, "%02x", &b) == 1) {
             out[len++] = (uint8_t)b;
             hex += 2;
         } else {
@@ -336,10 +350,15 @@ bool send_host_named_key(const char *name) {
     if (strlen(name) == 1 && name[0] >= 'a' && name[0] <= 'z') { send_host_keyboard_report(mod, 0x04 + (name[0] - 'a')); return true; }
     if (strlen(name) == 1 && name[0] >= 'A' && name[0] <= 'Z') { send_host_keyboard_report(mod | 0x02, 0x04 + (name[0] - 'A')); return true; }
 
-    unsigned int hex = 0;
-    if (sscanf(name, "0x%x", &hex) == 1 || sscanf(name, "%x", &hex) == 1) {
-        send_host_consumer_report((uint16_t)hex);
-        return true;
+    /* A consumer usage given as a number: only a complete "0x..." value. "%x" alone took any name
+       that starts with a hex digit ("Eject", "Connect") as a usage and reported it as handled. */
+    if (name[0] == '0' && (name[1] == 'x' || name[1] == 'X') && isxdigit((unsigned char)name[2])) {
+        char *end = NULL;
+        unsigned long usage = strtoul(name + 2, &end, 16);
+        if (end && *end == '\0' && usage <= 0xFFFF) {
+            send_host_consumer_report((uint16_t)usage);
+            return true;
+        }
     }
     return false;
 }

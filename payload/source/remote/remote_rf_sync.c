@@ -50,16 +50,18 @@ void handle_hub_frame_remote(const rf_frame_t *f) {
             if (f->payload[24] == 1) link_note_reply(f->seq, get_monotonic_ms()); /* answer to a sync query */
             char act_id[13] = {0};
             char act_name[24] = {0};
+            /* The name ends before payload[24], the query-reply flag (rf_send_hub_activity_sync_slot()
+               writes at most 21 name bytes after a short id and 14 after a long one) */
             if (f->payload[1] == '\0' || f->payload[2] == '\0' || f->payload[0] == '-') {
-                /* Short ID format (1-2 byte ID, up to 22 byte name) */
+                /* Short ID format (1-2 byte ID, up to 21 byte name) */
                 strncpy(act_id, (const char *)&f->payload[0], sizeof(act_id) - 1);
-                strncpy(act_name, (const char *)&f->payload[3], sizeof(act_name) - 1);
+                memcpy(act_name, &f->payload[3], 21);
             } else if (f->payload[10] >= 0x20) {
                 memcpy(act_id, f->payload, 10);
-                memcpy(act_name, &f->payload[10], 15);
+                memcpy(act_name, &f->payload[10], 14);
             } else {
                 memcpy(act_id, f->payload, 12);
-                memcpy(act_name, &f->payload[12], 14);
+                memcpy(act_name, &f->payload[12], 12);
             }
 
             uint64_t now_ms = get_monotonic_ms();
@@ -95,7 +97,8 @@ void handle_hub_frame_remote(const rf_frame_t *f) {
             }
 
             uint8_t is_query_reply = f->payload[24];
-            uint64_t time_since_wake = (s_last_wake_ms > 0) ? (now_ms - s_last_wake_ms) : 999999;
+            /* The wake is stamped with get_boot_ms() (fb_set_blank), which counts the time suspended */
+            uint64_t time_since_wake = (s_last_wake_ms > 0) ? ms_since(get_boot_ms(), s_last_wake_ms) : 999999;
             uint64_t time_since_reconnect = (s_last_reconnect_ms > 0) ? (now_ms - s_last_reconnect_ms) : 999999;
             bool is_wake_or_reconnect = (time_since_wake < 6000 || time_since_reconnect < 6000);
             bool is_state_catchup = (!g_initial_sync_received || is_query_reply == 0x01 || is_wake_or_reconnect);
@@ -744,10 +747,15 @@ void *rf_rx_worker(void *arg) {
             continue;
         }
 
-        /* Windowed OTA data frames have no message type (header 0x60, see rf_proto.h) */
-        if (g_is_ota_updating && n >= 32 && pkt[0] == 0x20 && pkt[2] == 0x12 && (pkt[4] & 0xE0) == RF_OTA_HDR_DATA) {
-            g_last_hub_frame_ms = get_monotonic_ms();
-            handle_ota_data_frame(pkt);
+        /* Windowed OTA data frames have no message type (header 0x60, see rf_proto.h). Outside OTA
+           mode (remote_ui restarted while the Hub still sends a transfer) one is dropped: the byte
+           where a typed frame has its type is part of the chunk index, and rf_is_valid_frame()
+           below would take it for an unpair notice, a settings push or a sleep request. */
+        if (n >= 32 && pkt[0] == 0x20 && pkt[2] == 0x12 && (pkt[4] & 0xE0) == RF_OTA_HDR_DATA) {
+            if (g_is_ota_updating) {
+                g_last_hub_frame_ms = get_monotonic_ms();
+                handle_ota_data_frame(pkt);
+            }
             continue;
         }
 

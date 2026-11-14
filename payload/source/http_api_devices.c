@@ -24,7 +24,7 @@
 static uint8_t device_ir_ports(const char *dev_id) {
     uint8_t ports = 7;
     if (!dev_id || !dev_id[0]) return ports;
-    cJSON *root = config_store_get_devices_json();
+    cJSON *root = config_store_devices_copy();
     if (!root) return ports;
     cJSON *devs = cJSON_GetObjectItemCaseSensitive(root, "devices");
     cJSON *d = NULL;
@@ -38,7 +38,7 @@ static uint8_t device_ir_ports(const char *dev_id) {
         if (cp && cJSON_IsNumber(cp) && cp->valueint >= 0 && cp->valueint <= 7) ports = (uint8_t)cp->valueint;
         break;
     }
-    /* root is the daemon's cached device list (config_store_get_devices_json): not freed here */
+    cJSON_Delete(root);
     return ports;
 }
 
@@ -57,6 +57,50 @@ static void learned_stats(const char *raw, int *pulses, unsigned long *total_us)
     }
 }
 
+/* A timing field of the device save body as an int: a JSON number or a numeric string.
+ * Returns 0 for any other type (null, bool, array, object), whose valuestring is NULL. */
+static int device_int_field(const cJSON *j, int *out) {
+    if (cJSON_IsNumber(j)) {
+        double d = j->valuedouble;
+        if (d != d) return 0;
+        if (d > 2147483647.0) d = 2147483647.0;
+        if (d < -2147483648.0) d = -2147483648.0;
+        *out = (int)d;
+        return 1;
+    }
+    if (cJSON_IsString(j) && j->valuestring) {
+        *out = atoi(j->valuestring);
+        return 1;
+    }
+    return 0;
+}
+
+/* Every timing field present in the body has a usable type */
+static int device_int_fields_valid(const cJSON *p) {
+    static const char *const keys[] = {
+        "interDeviceDelay", "interKeyDelay", "holdInterKeyDelay", "powerOnDelay",
+        "btReconnectDurationSec", "btReconnectDelaySec"
+    };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        const cJSON *j = cJSON_GetObjectItemCaseSensitive(p, keys[i]);
+        int v;
+        if (j && !device_int_field(j, &v)) return 0;
+    }
+    return 1;
+}
+
+/* The send delays present in the body are within 0..DEVICE_DELAY_MAX_MS: the sender sleeps them
+ * out before the next command, and hw_action.c holds its command lock meanwhile */
+static int device_delay_fields_in_range(const cJSON *p) {
+    static const char *const keys[] = { "interDeviceDelay", "interKeyDelay", "holdInterKeyDelay" };
+    for (size_t i = 0; i < sizeof(keys) / sizeof(keys[0]); i++) {
+        const cJSON *j = cJSON_GetObjectItemCaseSensitive(p, keys[i]);
+        int v;
+        if (j && device_int_field(j, &v) && (v < 0 || v > DEVICE_DELAY_MAX_MS)) return 0;
+    }
+    return 1;
+}
+
 static pthread_mutex_t s_capture_lock = PTHREAD_MUTEX_INITIALIZER;
 
 int http_api_devices_handle(int client_fd, const char *method, const char *clean_path,
@@ -66,9 +110,10 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
 
     /* Route: GET /api/inventory */
     if (strcmp(clean_path, "/api/inventory") == 0 && strcmp(method, "GET") == 0) {
-        cJSON *devs = get_device_list_cached();
+        cJSON *devs = get_device_list_copy();
         if (devs) {
             send_cjson_resp(client_fd, 200, devs);
+            cJSON_Delete(devs);
         } else {
             send_json_error(client_fd, 404, "DeviceList not found");
         }
@@ -78,9 +123,10 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
 
     /* Route: GET /api/devices */
     if (strcmp(clean_path, "/api/devices") == 0 && strcmp(method, "GET") == 0) {
-        cJSON *root = config_store_get_devices_json();
+        cJSON *root = config_store_devices_copy();
         if (root) {
             send_cjson_resp(client_fd, 200, root);
+            cJSON_Delete(root);
         } else {
             send_json_error(client_fd, 404, "Devices not found");
         }
@@ -344,7 +390,7 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
         }
         cJSON *res_cmds = cJSON_CreateArray();
         if (dev_id[0]) {
-            cJSON *root = config_store_get_devices_json();
+            cJSON *root = config_store_devices_copy();
             if (root) {
                 cJSON *devs = cJSON_GetObjectItemCaseSensitive(root, "devices");
                 if (devs && cJSON_IsArray(devs)) {
@@ -366,6 +412,7 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
                         }
                     }
                 }
+                cJSON_Delete(root);
             }
         }
         cJSON *resp = cJSON_CreateObject();
@@ -437,6 +484,11 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
          strcmp(clean_path, "/ir/device-mqtt") == 0 || strcmp(clean_path, "/ir/device-power") == 0 ||
          strcmp(clean_path, "/ir/new-device") == 0 || strcmp(clean_path, "/api/new-device") == 0) && strcmp(method, "POST") == 0) {
         cJSON *p = parse_request_params(body);
+        if (p && (!device_int_fields_valid(p) || !device_delay_fields_in_range(p))) {
+            /* A timing field of the wrong type, or a send delay out of range: refuse the whole save (400) */
+            cJSON_Delete(p);
+            p = NULL;
+        }
         int success = 0;
         char dev_id_out[32] = {0};
         if (p) {
@@ -475,18 +527,16 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
                 else if (cJSON_IsString(j_en)) en_val = (strcmp(j_en->valuestring, "1") == 0 || strcasecmp(j_en->valuestring, "true") == 0) ? 1 : 0;
             }
 
-            cJSON *root = config_store_get_devices_json();
-            if (!root) {
-                root = cJSON_CreateObject();
-                cJSON_AddItemToObject(root, "devices", cJSON_CreateArray());
-            }
-            cJSON *devs = cJSON_GetObjectItemCaseSensitive(root, "devices");
-            if (!devs) {
+            /* held until the new list is saved: another save cannot slip in between */
+            config_store_lock();
+            cJSON *root = config_store_devices_copy(); /* NULL only when out of memory: nothing saved */
+            cJSON *devs = root ? cJSON_GetObjectItemCaseSensitive(root, "devices") : NULL;
+            if (root && !devs) {
                 devs = cJSON_CreateArray();
                 cJSON_AddItemToObject(root, "devices", devs);
             }
 
-            if (!dev_id[0]) {
+            if (devs && !dev_id[0]) {
                 int cand = 1;
                 while (1) {
                     char cand_s[16];
@@ -509,7 +559,7 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
                 }
             }
 
-            if (dev_id[0]) {
+            if (devs && dev_id[0]) {
                 strncpy(dev_id_out, dev_id, sizeof(dev_id_out) - 1);
                 cJSON *found_dev = NULL;
                 cJSON *dev_item = NULL;
@@ -575,28 +625,32 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
 
                 cJSON *j_idd = cJSON_GetObjectItemCaseSensitive(p, "interDeviceDelay");
                 if (j_idd) {
-                    int val = cJSON_IsNumber(j_idd) ? (int)j_idd->valuedouble : atoi(j_idd->valuestring);
+                    int val = 0;
+                    device_int_field(j_idd, &val);
                     cJSON_DeleteItemFromObjectCaseSensitive(found_dev, "interDeviceDelay");
                     cJSON_AddNumberToObject(found_dev, "interDeviceDelay", val);
                 }
 
                 cJSON *j_ikd = cJSON_GetObjectItemCaseSensitive(p, "interKeyDelay");
                 if (j_ikd) {
-                    int val = cJSON_IsNumber(j_ikd) ? (int)j_ikd->valuedouble : atoi(j_ikd->valuestring);
+                    int val = 0;
+                    device_int_field(j_ikd, &val);
                     cJSON_DeleteItemFromObjectCaseSensitive(found_dev, "interKeyDelay");
                     cJSON_AddNumberToObject(found_dev, "interKeyDelay", val);
                 }
 
                 cJSON *j_hikd = cJSON_GetObjectItemCaseSensitive(p, "holdInterKeyDelay");
                 if (j_hikd) {
-                    int val = cJSON_IsNumber(j_hikd) ? (int)j_hikd->valuedouble : atoi(j_hikd->valuestring);
+                    int val = 0;
+                    device_int_field(j_hikd, &val);
                     cJSON_DeleteItemFromObjectCaseSensitive(found_dev, "holdInterKeyDelay");
                     cJSON_AddNumberToObject(found_dev, "holdInterKeyDelay", val);
                 }
 
                 cJSON *j_pod = cJSON_GetObjectItemCaseSensitive(p, "powerOnDelay");
                 if (j_pod) {
-                    int val = cJSON_IsNumber(j_pod) ? (int)j_pod->valuedouble : atoi(j_pod->valuestring);
+                    int val = 0;
+                    device_int_field(j_pod, &val);
                     cJSON_DeleteItemFromObjectCaseSensitive(found_dev, "powerOnDelay");
                     cJSON_AddNumberToObject(found_dev, "powerOnDelay", val);
                 }
@@ -628,14 +682,16 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
 
                 cJSON *j_btdur = cJSON_GetObjectItemCaseSensitive(p, "btReconnectDurationSec");
                 if (j_btdur) {
-                    int val = cJSON_IsNumber(j_btdur) ? (int)j_btdur->valuedouble : atoi(j_btdur->valuestring);
+                    int val = 0;
+                    device_int_field(j_btdur, &val);
                     cJSON_DeleteItemFromObjectCaseSensitive(found_dev, "btReconnectDurationSec");
                     cJSON_AddNumberToObject(found_dev, "btReconnectDurationSec", val);
                 }
 
                 cJSON *j_btdly = cJSON_GetObjectItemCaseSensitive(p, "btReconnectDelaySec");
                 if (j_btdly) {
-                    int val = cJSON_IsNumber(j_btdly) ? (int)j_btdly->valuedouble : atoi(j_btdly->valuestring);
+                    int val = 0;
+                    device_int_field(j_btdly, &val);
                     cJSON_DeleteItemFromObjectCaseSensitive(found_dev, "btReconnectDelaySec");
                     cJSON_AddNumberToObject(found_dev, "btReconnectDelaySec", val);
                 }
@@ -672,9 +728,11 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
                     cJSON_AddItemToObject(found_dev, "powerOffSequence", pf_copy);
                 }
 
-                config_store_save_devices(root);
+                if (config_store_save_devices(root) == 0) root = NULL;
                 success = 1;
             }
+            cJSON_Delete(root); /* NULL once the store took it */
+            config_store_unlock();
             cJSON_Delete(p);
         }
         cJSON *resp = cJSON_CreateObject();
@@ -716,7 +774,8 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
                 }
             }
             if (dev_id[0]) {
-                cJSON *root = config_store_get_devices_json();
+                config_store_lock();
+                cJSON *root = config_store_devices_copy();
                 if (root) {
                     cJSON *devs = cJSON_GetObjectItemCaseSensitive(root, "devices");
                     if (devs && cJSON_IsArray(devs)) {
@@ -729,13 +788,15 @@ int http_api_devices_handle(int client_fd, const char *method, const char *clean
                             else if (jid && cJSON_IsString(jid)) strncpy(d_id_str, jid->valuestring, sizeof(d_id_str) - 1);
                             if (strcmp(d_id_str, dev_id) == 0) {
                                 cJSON_DeleteItemFromArray(devs, di);
-                                config_store_save_devices(root);
+                                if (config_store_save_devices(root) == 0) root = NULL;
                                 success = 1;
                                 break;
                             }
                         }
                     }
+                    cJSON_Delete(root); /* NULL once the store took it */
                 }
+                config_store_unlock();
             }
             cJSON_Delete(p);
         }

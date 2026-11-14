@@ -460,8 +460,9 @@ int main(int argc, char **argv) {
 
         static uint64_t last_progress_render_ms = 0;
         if (g_is_switching_activity) {
-            if (now_ms - g_switching_start_ms > (uint64_t)g_switching_total_ms + 400) {
-                printf("[*] Activity switch complete (elapsed %llums), unlocking screen\n", (unsigned long long)(now_ms - g_switching_start_ms));
+            /* g_switching_start_ms can be newer than now_ms: the RF thread starts the overlay */
+            if (ms_since(now_ms, g_switching_start_ms) > (uint64_t)g_switching_total_ms + 400) {
+                printf("[*] Activity switch complete (elapsed %llums), unlocking screen\n", (unsigned long long)ms_since(now_ms, g_switching_start_ms));
                 g_is_switching_activity = false;
                 g_last_switch_completed_ms = now_ms;
                 strncpy(g_last_switch_target_id, g_switching_target_id, sizeof(g_last_switch_target_id) - 1);
@@ -663,6 +664,10 @@ int main(int argc, char **argv) {
             while (read(g_btn_fd, &ev, sizeof(ev)) == sizeof(ev)) {
                 if (ev.type == EV_KEY) {
                     reset_idle_timer();
+                    /* The release of the key held over RF always goes out: an overlay, a view
+                     * change or a blank screen would drop it below, and the hold repeats would
+                     * go on until the next key */
+                    if (ev.value == 0 && remote_release_held_rf_key(ev.code)) continue;
                     if (!g_screen_on) {
                         fb_set_blank(false);
                         render_screen();

@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <strings.h>
 #include <pthread.h>
+#include <time.h>
 
 static cJSON *build_activity_steps_cjson(const char *seq_text) {
     cJSON *arr = cJSON_CreateArray();
@@ -86,10 +87,23 @@ static cJSON *build_activity_steps_cjson(const char *seq_text) {
     return arr;
 }
 
-/* Help: the devices the last Help asked about, so answers toggle only those */
+/* Help: the devices the last Help asked about, so answers toggle only those; the activity it
+ * ran in and when, so a late answer cannot toggle a device after the Hub moved on */
 static orch_toggle_t s_help_toggles[16];
 static size_t s_help_toggle_count;
+static char s_help_activity[32];
+static time_t s_help_started;
 static pthread_mutex_t s_help_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* hub_rf waits up to 120 s for the re-send, then asks one question per device: an answer
+ * later than this does not belong to that Help */
+#define HELP_ANSWER_MAX_AGE_SEC 300
+
+static time_t help_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec;
+}
 
 static void device_name(const char *id, char *out, size_t cap);
 
@@ -127,6 +141,8 @@ int activity_help_start(const cJSON *req, cJSON **out) {
         pthread_mutex_lock(&s_help_lock);
         memcpy(s_help_toggles, toggles, n * sizeof(toggles[0]));
         s_help_toggle_count = n;
+        snprintf(s_help_activity, sizeof(s_help_activity), "%s", act_id);
+        s_help_started = help_now();
         pthread_mutex_unlock(&s_help_lock);
     }
     cJSON *resp = cJSON_CreateObject();
@@ -159,7 +175,19 @@ int activity_help_answer(const cJSON *req, cJSON **out) {
     if (cJSON_IsFalse(jon) || (cJSON_IsNumber(jon) && jon->valuedouble == 0)) on = 0;
 
     char cmd[64] = {0};
+    char current[32];
+    snprintf(current, sizeof(current), "%s", orch_get_current_activity());
     pthread_mutex_lock(&s_help_lock);
+    /* The questions are void once the Hub left the activity of that Help (a power off, another
+     * activity) or when they are too old: the toggle would switch a device the user no longer
+     * means */
+    if (s_help_toggle_count > 0 &&
+        (strcmp(current, s_help_activity) != 0 || help_now() - s_help_started > HELP_ANSWER_MAX_AGE_SEC)) {
+        s_help_toggle_count = 0;
+        pthread_mutex_unlock(&s_help_lock);
+        *out = help_error("The Help question is no longer valid");
+        return 409;
+    }
     for (size_t i = 0; i < s_help_toggle_count; i++) {
         if (strcmp(s_help_toggles[i].device_id, dev_id) != 0) continue;
         /* One answer per device, so a repeated "No" cannot toggle it back off */
@@ -182,7 +210,7 @@ int activity_help_answer(const cJSON *req, cJSON **out) {
 
 static void device_name(const char *id, char *out, size_t len) {
     snprintf(out, len, "%s", id);
-    cJSON *root = config_store_get_devices_json();
+    cJSON *root = config_store_devices_copy();
     cJSON *devs = root ? cJSON_GetObjectItemCaseSensitive(root, "devices") : NULL;
     cJSON *d = NULL;
     cJSON_ArrayForEach(d, devs) {
@@ -193,9 +221,10 @@ static void device_name(const char *id, char *out, size_t len) {
         else if (cJSON_IsString(jid)) snprintf(d_id, sizeof(d_id), "%s", jid->valuestring);
         if (strcmp(d_id, id) == 0 && cJSON_IsString(jname)) {
             snprintf(out, len, "%s", jname->valuestring);
-            return;
+            break;
         }
     }
+    cJSON_Delete(root);
 }
 
 /* The "error" string of a Help reply, or a plain text when the reply has none (out of memory) */
@@ -211,17 +240,14 @@ int http_api_activities_handle(int client_fd, const char *method, const char *cl
 
     /* Route: GET /api/activities */
     if (strcmp(clean_path, "/api/activities") == 0 && strcmp(method, "GET") == 0) {
-        cJSON *act_j = config_store_get_activities_json();
-        if (act_j) {
-            cJSON *resp = cJSON_Duplicate(act_j, 1);
-            if (resp) {
-                cJSON_AddStringToObject(resp, "currentId", orch_get_current_activity());
-                cJSON_AddNumberToObject(resp, "state", (int)orch_get_state());
-                send_cjson_resp(client_fd, 200, resp);
-                cJSON_Delete(resp);
-                close(client_fd);
-                return 1;
-            }
+        cJSON *resp = config_store_activities_copy();
+        if (resp) {
+            cJSON_AddStringToObject(resp, "currentId", orch_get_current_activity());
+            cJSON_AddNumberToObject(resp, "state", (int)orch_get_state());
+            send_cjson_resp(client_fd, 200, resp);
+            cJSON_Delete(resp);
+            close(client_fd);
+            return 1;
         }
         send_json_error(client_fd, 404, "Activities not found");
         close(client_fd);
@@ -470,12 +496,15 @@ int http_api_activities_handle(int client_fd, const char *method, const char *cl
                 char dev_buf[512];
                 strncpy(dev_buf, p_devs->valuestring, sizeof(dev_buf) - 1);
                 dev_buf[sizeof(dev_buf) - 1] = '\0';
-                char *tok = strtok(dev_buf, ",; ");
+                /* strtok_r: strtok keeps its position in one static pointer, shared by every
+                 * request thread */
+                char *save = NULL;
+                char *tok = strtok_r(dev_buf, ",; ", &save);
                 while (tok) {
                     if (tok[0] && strcmp(tok, "0") != 0) {
                         cJSON_AddItemToArray(dev_ids_arr, cJSON_CreateString(tok));
                     }
-                    tok = strtok(NULL, ",; ");
+                    tok = strtok_r(NULL, ",; ", &save);
                 }
             }
             if (!dev_ids_provided && cJSON_GetArraySize(dev_ids_arr) == 0) {
@@ -496,8 +525,9 @@ int http_api_activities_handle(int client_fd, const char *method, const char *cl
                 }
             }
 
-            cJSON *cached = config_store_get_activities_json();
-            cJSON *root = cached ? cJSON_Duplicate(cached, 1) : cJSON_CreateObject();
+            /* held until the new list is saved: another save cannot slip in between */
+            config_store_lock();
+            cJSON *root = config_store_activities_copy(); /* NULL only when out of memory */
             if (root) {
                 cJSON *acts = cJSON_GetObjectItemCaseSensitive(root, "activities");
                 if (!acts) acts = cJSON_AddArrayToObject(root, "activities");
@@ -512,9 +542,12 @@ int http_api_activities_handle(int client_fd, const char *method, const char *cl
                         cJSON *jname = cJSON_GetObjectItemCaseSensitive(ai, "name");
                         const char *cur_name = (jname && cJSON_IsString(jname)) ? jname->valuestring : "";
 
+                        /* The id is the key: a request with an id changes that activity only, a
+                         * request without one creates a new activity. Matching the name as well
+                         * overwrote another activity whose name was the same (a second "New
+                         * Activity", or a rename to an existing name). */
                         if ((act_id_str[0] && strcmp(cur_id, act_id_str) == 0) ||
-                            (strcmp(act_id_str, "-1") == 0 && strcasecmp(cur_name, "PowerOff") == 0) ||
-                            (name_str[0] && strcasecmp(cur_name, name_str) == 0)) {
+                            (strcmp(act_id_str, "-1") == 0 && strcasecmp(cur_name, "PowerOff") == 0)) {
                             matched = ai;
                             break;
                         }
@@ -594,6 +627,7 @@ int http_api_activities_handle(int client_fd, const char *method, const char *cl
                 cJSON_Delete(enter_steps);
                 cJSON_Delete(leave_steps);
             }
+            config_store_unlock();
 
             cJSON_Delete(params);
         }
@@ -618,6 +652,18 @@ int http_api_activities_handle(int client_fd, const char *method, const char *cl
             if (p_steps && cJSON_IsArray(p_steps)) step_arr = p_steps;
             else if (p_steps && cJSON_IsString(p_steps)) step_arr = build_activity_steps_cjson(p_steps->valuestring);
 
+            /* The steps run on this request's thread, up to 3 s each: without a limit one request
+             * held an HTTP worker for steps x 3 s. A sequence can hold no more steps than the
+             * configuration keeps (MAX_ACTIVITY_STEPS), so a longer one is refused. */
+            if (step_arr && cJSON_IsArray(step_arr) && cJSON_GetArraySize(step_arr) > MAX_ACTIVITY_STEPS) {
+                if (step_arr != p_steps) cJSON_Delete(step_arr);
+                cJSON_Delete(params);
+                char msg[64];
+                snprintf(msg, sizeof(msg), "Too many steps (limit %d)", MAX_ACTIVITY_STEPS);
+                send_json_error(client_fd, 400, msg);
+                close(client_fd);
+                return 1;
+            }
             if (step_arr && cJSON_IsArray(step_arr)) {
                 cJSON *st = NULL;
                 cJSON_ArrayForEach(st, step_arr) {
@@ -678,7 +724,8 @@ int http_api_activities_handle(int client_fd, const char *method, const char *cl
                     snprintf(id_buf, sizeof(id_buf), "%ld", (long)p_id->valuedouble);
                     act_id_str = id_buf;
                 }
-                cJSON *root = config_store_get_activities_json();
+                config_store_lock();
+                cJSON *root = config_store_activities_copy();
                 if (root) {
                     cJSON *acts = cJSON_GetObjectItemCaseSensitive(root, "activities");
                     if (acts && cJSON_IsArray(acts)) {
@@ -691,13 +738,15 @@ int http_api_activities_handle(int client_fd, const char *method, const char *cl
                             else if (jid && cJSON_IsString(jid)) strncpy(item_id, jid->valuestring, sizeof(item_id) - 1);
                             if (strcmp(item_id, act_id_str) == 0) {
                                 cJSON_DeleteItemFromArray(acts, i);
-                                config_store_save_activities(root);
+                                if (config_store_save_activities(root) == 0) root = NULL;
                                 success = 1;
                                 break;
                             }
                         }
                     }
+                    cJSON_Delete(root); /* NULL once the store took it */
                 }
+                config_store_unlock();
             }
             cJSON_Delete(params);
         }
