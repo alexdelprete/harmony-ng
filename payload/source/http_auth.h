@@ -33,7 +33,6 @@ struct user_account {
 extern "C" {
 #endif
 
-void http_auth_init(void);
 void compute_ha1(const char *username, const char *realm, const char *password, char ha1_out[65]);
 int load_user_accounts(struct user_account *users, int max_users, int *auth_enabled);
 int save_user_accounts(const struct user_account *users, int count, int auth_enabled);
@@ -53,6 +52,12 @@ void http_auth_note_success(const char *client_ip);
 /* End the sessions of one account (deleted, renamed, demoted, new password), or all of them */
 void http_auth_drop_user_sessions(const char *username);
 void http_auth_drop_all_sessions(void);
+/* Authentication went from off to on. While it was off every client was admin, so anybody could
+ * have made or changed an account or a token: adds "to_check": {"users": [...], "tokens": [...]}
+ * to the reply, every account except owner (the one the switching request names, NULL for none)
+ * and every personal access token (no hashes; "owner_missing": true when its account is gone), for
+ * the UIs to show at once. */
+void http_auth_add_switch_check(cJSON *reply, const struct user_account *users, int count, const char *owner);
 
 enum http_role http_auth_check_request(const char *req, const char *client_ip,
                                        const char *method, char *out_user, size_t out_user_len);

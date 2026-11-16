@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import io
+import os
 import pathlib
 import shutil
 import subprocess
@@ -53,6 +54,41 @@ REMOTE_COMMANDS = ("md5sum", "mkdir", "rm", "mv", "cp", "chmod", "ln", "grep", "
 # the backup; the check removes it when done.
 CHECK_BUSYBOX = "/tmp/busybox"
 FLASH_SLACK_KB = 32  # JFFS2/UBIFS need room beyond each file's own size
+
+
+# remote_ui reads its settings (no_screen among them) from this file (SETTINGS_CONFIG_FILE)
+SETTINGS_CONF = "/data/remote_settings.conf"
+NO_SCREEN_CMD = (f"touch {SETTINGS_CONF} && sed -i '/^no_screen=/d' {SETTINGS_CONF} && "
+                 f"echo 'no_screen=1' >> {SETTINGS_CONF} && grep -q '^no_screen=1' {SETTINGS_CONF}")
+ELF_MACHINE_ARM = 40
+
+
+def wrong_arch_files() -> list[str]:
+    """Local binaries in DEPLOY_FILES that are ELF files but not ARM (e.g. a Hub build)."""
+    wrong = []
+    for f in DEPLOY_FILES:
+        try:
+            with open(f, "rb") as fh:
+                head = fh.read(20)
+        except OSError:
+            continue
+        if len(head) == 20 and head[:4] == b"\x7fELF":
+            machine = int.from_bytes(head[18:20], "little" if head[5] == 1 else "big")
+            if machine != ELF_MACHINE_ARM:
+                wrong.append(f.name)
+    return wrong
+
+
+def default_ssh_key() -> pathlib.Path | None:
+    """The key the other tools use without --key: $SSH_KEY, else the newest
+    ~/.ssh/harmony_owner_* (setup_remote.py creates harmony_owner_ed25519)."""
+    env_key = os.environ.get("SSH_KEY")
+    if env_key and os.path.isfile(env_key):
+        return pathlib.Path(env_key)
+    ssh_dir = pathlib.Path.home() / ".ssh"
+    keys = sorted((k for k in ssh_dir.glob("harmony_owner_*") if k.is_file() and not k.name.endswith(".pub")),
+                  key=lambda k: k.stat().st_mtime, reverse=True) if ssh_dir.is_dir() else []
+    return keys[0] if keys else None
 
 
 def run_cmd(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -210,21 +246,30 @@ def main() -> None:
     parser.add_argument("--user", default="root", help="SSH username (default root)")
     parser.add_argument("--key", type=pathlib.Path, help="SSH private key path")
     parser.add_argument("--factory-reset", action="store_true",
-                        help="Revert the Harmony remote to stock firmware (restores stock scripts & permissions)")
+                        help="Revert the Harmony remote to stock firmware with remote/factory_reset.sh (deletes its settings, logs and SSH access)")
     parser.add_argument("--reboot", action="store_true",
                         help="Reboot the remote instead of hot-restarting remote_ui (it also reboots when an old process still holds the watchdog)")
     parser.add_argument("--no-sync", action="store_true",
                         help="Skip forcing full configuration sync from Hub after deployment (default: False)")
     parser.add_argument("--check", action="store_true",
                         help="Run only the ready-to-go check, which changes nothing on the remote")
+    parser.add_argument("--no-screen", action="store_true",
+                        help="Run remote_ui in no-screen mode (for remotes with a broken screen)")
     args = parser.parse_args()
+
+    if not args.factory_reset:
+        wrong = wrong_arch_files()
+        if wrong:
+            print(f"[-] Not built for the remote (ARM): {', '.join(wrong)}. Nothing was changed.")
+            sys.exit(1)
 
     target = f"{args.user}@{args.ip}"
     # The keepalive ends a command within 15 s if the remote resets, rather than waiting forever
     ssh_opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
                 "-o", "ConnectTimeout=8", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3"]
-    if args.key and args.key.is_file():
-        ssh_opts.extend(["-i", str(args.key)])
+    key = args.key if args.key and args.key.is_file() else default_ssh_key()
+    if key:
+        ssh_opts.extend(["-i", str(key)])
 
     print("=" * 60)
     print("  Harmony Remote Custom Runtime Deployment")
@@ -252,27 +297,40 @@ def main() -> None:
         if conf != "RESET":
             print("[-] Confirmation mismatch. Aborting reset.")
             sys.exit(1)
-        print("[*] Performing stock revert...")
-        revert_cmd = (
-            "if [ -x /data/init.sh ]; then /data/init.sh stop 2>/dev/null || true; fi; "
-            "killall -9 init.sh remote_ui elite_ui codex_elite remote_watchdog.sh elite_watchdog.sh codex_watchdog.sh 2>/dev/null || true; "
-            "if [ -f /data/stock_backup/rcS.local.orig ] && ! grep -q 'usbeth' /data/stock_backup/rcS.local.orig 2>/dev/null && ! grep -q 'dropbear' /data/stock_backup/rcS.local.orig 2>/dev/null && ! grep -q 'exit 0' /data/stock_backup/rcS.local.orig 2>/dev/null; then "
-            "  cp -f /data/stock_backup/rcS.local.orig /etc/init.d/rcS.local; "
-            "  chmod 755 /etc/init.d/rcS.local; "
-            "else "
-            "  printf '#!/bin/sh\\n/usr/bin/flashuboot /lib/firmware/u-boot.bin 2>/dev/null || true\\n' > /etc/init.d/rcS.local; "
-            "  chmod 755 /etc/init.d/rcS.local; "
-            "fi; "
-            "chmod +x /usr/bin/watchdog /usr/bin/usbhid /usr/bin/hal /opt/luaworks/luaworks /opt/luadraws/luadraws /usr/sbin/bluetoothd /usr/bin/dbus-daemon 2>/dev/null || true; "
-            "rm -f /etc/nowatchdog /etc/tdeenable /data/reboot_counter /data/codex_elite.conf /data/remote_ui.conf /tmp/codex_elite.log /tmp/remote_ui.log /tmp/remote-init.log /tmp/remote_stop /tmp/remote_supervisors.pid /tmp/elite_stop /tmp/elite_supervisors.pid 2>/dev/null || true; "
-            "rm -f /usr/bin/sync /usr/sbin/dropbear /usr/sbin/dropbearkey /usr/sbin/dbclient /usr/sbin/scp 2>/dev/null || true; "
-            "rm -f /usr/bin/head /usr/bin/tail /usr/bin/which /usr/bin/find /usr/bin/tar /usr/bin/xargs /usr/bin/xz /usr/bin/bzcat /usr/bin/bunzip2 /usr/bin/lzma /usr/bin/unlzma /usr/bin/diff /usr/bin/patch /usr/bin/awk /usr/bin/sed 2>/dev/null || true; "
-            "/data/remote_sync 2>/dev/null || /data/sync 2>/dev/null || sync 2>/dev/null || true; sleep 1; "
-            "rm -f /data/remote_* /data/elite_* /data/codex_* /data/dropbear* /data/sync /data/mknod /data/scp /data/busybox /data/init.sh /data/safe_reboot.sh /data/factory_reset.sh 2>/dev/null || true; "
-            "rm -rf /data/stock_backup /data/assets /data/themes 2>/dev/null || true; "
-            "reboot -f 2>/dev/null &"
-        )
-        run_cmd(["ssh"] + ssh_opts + [target, revert_cmd])
+        print("[*] Performing stock revert (factory_reset.sh)...")
+        # The remote's one reset script (the same that Settings > Factory Reset runs), sent on the
+        # standard input of ONE login that saves it, runs it without its own reboot and then
+        # reboots: the script deletes the SSH keys, so a second login would be refused. Run with
+        # HUP and PIPE ignored and its output in a file, so a cut login does not stop it half way
+        reset_script = SCRIPT_DIR / "factory_reset.sh"
+        if not reset_script.is_file() or reset_script.stat().st_size == 0:
+            print(f"[-] {reset_script} is missing or empty; nothing on the remote was changed.")
+            sys.exit(1)
+        data = reset_script.read_bytes()
+        # the script runs only when it arrived complete (MD5 checked on the remote)
+        login_cmd = ("rm -f /tmp/factory_reset.log; cat > /tmp/factory_reset.sh; "
+                     f"if [ \"$(md5sum < /tmp/factory_reset.sh | cut -c1-32)\" != {hashlib.md5(data).hexdigest()} ]; then "
+                     "echo '[-] The reset script did not arrive complete; nothing was changed.'; exit 1; fi; "
+                     "(trap '' HUP PIPE; sh /tmp/factory_reset.sh --confirm --no-reboot > /tmp/factory_reset.log 2>&1 && "
+                     "echo factory-reset-steps-done >> /tmp/factory_reset.log && "
+                     "{ (sleep 1; reboot -f) </dev/null >/dev/null 2>&1 & }); "
+                     "cat /tmp/factory_reset.log; grep -q '^factory-reset-steps-done$' /tmp/factory_reset.log")
+        res = subprocess.run(["ssh"] + ssh_opts + [target, login_cmd],
+                             input=data, capture_output=True, check=False)
+        out = res.stdout.decode(errors="replace")
+        for line in out.splitlines():
+            if line.strip() and line.strip() != "factory-reset-steps-done":
+                print(line)
+        if "factory-reset-steps-done" not in out.split():
+            # with the mark the reset is done, whatever the exit code (the reboot may cut it)
+            print(f"[-] The factory reset was not confirmed (exit code {res.returncode}): {res.stderr.decode(errors='replace').strip()}")
+            if res.returncode == 255:
+                print("    The connection was lost. The reset may still have finished: the remote then reboots by itself.")
+                print("    If it does not come back with the stock firmware and SSH refuses the key, power-cycle it.")
+            else:
+                print("    The remote was not rebooted. Run it again; if SSH refuses the key (the reset got as far as")
+                print("    removing it), power-cycle the remote.")
+            sys.exit(1)
         print("[+] The remote is rebooting into official Logitech firmware.")
         sys.exit(0)
 
@@ -369,6 +427,12 @@ def main() -> None:
     if final_res.stdout.strip():
         print(f"    {final_res.stdout.strip()}")
 
+    if args.no_screen:
+        print(f"[*] Configuring No-Screen mode in {SETTINGS_CONF}...")
+        if run_cmd(["ssh"] + ssh_opts + [target, NO_SCREEN_CMD]).returncode != 0:
+            print(f"[-] Could not write no_screen=1 to {SETTINGS_CONF}; remote_ui was NOT restarted. Run the deployment again.")
+            sys.exit(1)
+
     if not args.no_sync:
         print("[*] Requesting automatic Hub config sync after startup (touch /data/force_sync)...")
         run_cmd(["ssh"] + ssh_opts + [target, "touch /data/force_sync 2>/dev/null || true"])
@@ -414,6 +478,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if sys.version_info < (3, 11):
-        sys.exit(f"This tool needs Python 3.11 or newer (this is Python {sys.version.split()[0]}).")
+    if sys.version_info < (3, 13):
+        sys.exit(f"This tool needs Python 3.13 or newer (this is Python {sys.version.split()[0]}).")
     main()

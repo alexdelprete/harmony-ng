@@ -13,7 +13,7 @@ Requires NO Logitech cloud, NO Harmony app, NO XMPP, and NO hub_id.
 
 Usage:
     python tools/root_hub_usb.py
-    python tools/root_hub_usb.py --wifi-ssid "MyNetwork" --wifi-pass "Secret123"
+    python tools/root_hub_usb.py --wifi-ssid "MyNetwork"   # asks for the Wi-Fi password
     python tools/root_hub_usb.py --hub-ip 192.168.1.50
 """
 
@@ -57,7 +57,7 @@ cp /etc/dropbear/authorized_keys /home/root/.ssh/authorized_keys
 chmod 700 /root /root/.ssh /home/root /home/root/.ssh
 chmod 600 /etc/dropbear/authorized_keys /root/.ssh/authorized_keys /home/root/.ssh/authorized_keys
 
-# Phase 2: Set blank root password fallback in /etc/passwd
+# Phase 2: Set blank root password fallback in /etc/passwd (serial console only: SSH takes keys)
 sed -i 's/^root:[^:]*:/root::/' /etc/passwd
 
 # Phase 3: Disable hardware watchdog
@@ -68,7 +68,15 @@ chmod 644 /etc/nowatchdog
 /usr/bin/lua -e 'local f=io.open("/usr/sbin/dropbearmulti","rb") f:seek("set",%OFFSET%) local g=io.open("/data/dropbearmulti","wb") while true do local b=f:read(65536) if not b then break end g:write(b) end f:close() g:close()'
 
 chmod 755 /data/dropbearmulti
-ln -sf /data/dropbearmulti /usr/sbin/dropbear
+# /usr/sbin/dropbear (started by the stock boot script) takes keys only: -s refuses password
+# logins, -g also for root. Written under a new name and renamed: this script may be running
+# from that path.
+cat <<'EOF' > /usr/sbin/dropbear.new
+#!/bin/sh
+exec /data/dropbearmulti dropbear -s -g "$@"
+EOF
+chmod 755 /usr/sbin/dropbear.new
+mv -f /usr/sbin/dropbear.new /usr/sbin/dropbear
 ln -sf /data/dropbearmulti /usr/sbin/dropbearkey
 ln -sf /data/dropbearmulti /usr/sbin/dbclient
 ln -sf /data/dropbearmulti /usr/sbin/scp
@@ -78,10 +86,38 @@ if [ ! -r /etc/dropbear/dropbear_rsa_host_key ]; then
     /data/dropbearmulti dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
 fi
 
-# Phase 6: Start Dropbear SSH daemon in background and let rcS continue
-/data/dropbearmulti dropbear -R -p 0.0.0.0:22 "$@"
+# Phase 6: Start Dropbear SSH daemon in background and let rcS continue (key logins only)
+/data/dropbearmulti dropbear -s -g -R -p 0.0.0.0:22 "$@"
 exit 0
 """
+
+
+WIFI_PASS_ENV = "HARMONY_WIFI_PASS"
+
+
+def wifi_password(args, ssid: str) -> str | None:
+    """The Wi-Fi password: --wifi-pass, else $HARMONY_WIFI_PASS, else a prompt (open networks:
+    none). On the command line it lands in the shell history and the process list, so say so."""
+    if args.wifi_pass is not None:
+        print(f"[!] --wifi-pass puts the password in your shell history and the process list; "
+              f"leave it out to be asked, or set {WIFI_PASS_ENV}.")
+        return args.wifi_pass
+    if os.environ.get(WIFI_PASS_ENV) is not None:
+        return os.environ[WIFI_PASS_ENV]
+    if args.wifi_enc.upper() in ("NONE", "OPEN"):
+        return None
+    import getpass
+    print("Note: If password contains special characters (like $), interactive prompt preserves them literally.")
+    return getpass.getpass(f"Enter Wi-Fi password for '{ssid}': ")
+
+
+def private_key_path(pub_path: pathlib.Path) -> pathlib.Path:
+    """The private key that belongs to a public key file: the same name without ".pub", as
+    ssh-keygen names them. (with_suffix("") is wrong for names such as "id.backup.pub" or
+    "mykey.pub.txt".)"""
+    if pub_path.name.endswith(".pub"):
+        return pub_path.with_name(pub_path.name[:-4])
+    raise ValueError(f"{pub_path} does not end in .pub: pass the public key that sits next to its private key")
 
 
 def resolve_ssh_key(pubkey_path: str | None = None) -> tuple[pathlib.Path, str]:
@@ -253,6 +289,7 @@ def backup_stock_partitions(hub_ip: str, priv_key_path: pathlib.Path) -> pathlib
     golden_path = backup_dir / "golden_hub_backup.tar"
 
     ssh_opts = [
+        "-o", "BatchMode=yes",  # never wait at a password prompt the user cannot see
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=" + ("NUL" if sys.platform == "win32" else "/dev/null"),
         "-o", "LogLevel=ERROR",
@@ -344,7 +381,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Logitech Harmony Hub USB Root & Persistence Tool")
     parser.add_argument("--pubkey", help="Path to SSH public key to authorize")
     parser.add_argument("--wifi-ssid", help="Wi-Fi SSID to provision over USB")
-    parser.add_argument("--wifi-pass", default=None, help="Wi-Fi password (prompted if omitted)")
+    parser.add_argument("--wifi-pass", default=None,
+                        help=f"Wi-Fi password (better: leave it out to be asked, or set ${WIFI_PASS_ENV})")
     parser.add_argument("--wifi-enc", default="WPA2-PSK", help="Wi-Fi encryption (default: WPA2-PSK)")
     parser.add_argument("--wifi-only", action="store_true", help="Only configure Wi-Fi and reboot without restaging Dropbear")
     parser.add_argument("--hub-ip", help="Known Hub LAN IP address to verify SSH after reboot")
@@ -458,11 +496,7 @@ def main() -> None:
                 while not target_ssid:
                     target_ssid = input("SSID cannot be empty. Enter Wi-Fi SSID: ").strip()
 
-            target_pass = args.wifi_pass
-            if target_pass is None and args.wifi_enc.upper() not in ("NONE", "OPEN"):
-                import getpass
-                print("Note: If password contains special characters (like $), interactive prompt preserves them literally.")
-                target_pass = getpass.getpass(f"Enter Wi-Fi password for '{target_ssid}': ")
+            target_pass = wifi_password(args, target_ssid)
 
             print(f"[*] Provisioning Wi-Fi SSID '{target_ssid}' over USB HID...")
             if not hid.provision_wifi(target_ssid, target_pass or "", args.wifi_enc):
@@ -568,7 +602,7 @@ def main() -> None:
                 print(f"[*] Waiting for Dropbear SSH on {target_verify_ip}:22...")
                 if wait_for_ssh(target_verify_ip, 22, timeout_s=60):
                     print(f"\n[+] SUCCESS: Dropbear SSH is ONLINE at {target_verify_ip}:22!")
-                    priv_key_file = pub_path.with_suffix('')
+                    priv_key_file = private_key_path(pub_path)
                     print(f"    Connect: ssh -i {priv_key_file} root@{target_verify_ip}")
                     if not args.no_backup:
                         backup_stock_partitions(target_verify_ip, priv_key_file)
@@ -584,6 +618,6 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    if sys.version_info < (3, 11):
-        sys.exit(f"This tool needs Python 3.11 or newer (this is Python {sys.version.split()[0]}).")
+    if sys.version_info < (3, 13):
+        sys.exit(f"This tool needs Python 3.13 or newer (this is Python {sys.version.split()[0]}).")
     main()
