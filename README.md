@@ -30,7 +30,7 @@ Setting up HarmonyNG takes just a few minutes. Pre-built release bundles contain
 | **Harmony Hub** | [**Harmony Hub Installation Guide**](docs/FIRST_INSTALL_HUB.md) | Harmony Hub (Standard `046D:C129` or Pro 2400 `046D:C132`), Micro-USB cable, PC (Windows, macOS, or Linux) with Python 3.13 or newer |
 | **Harmony Touchscreen Remotes** | [**Harmony Remote Installation Guide**](docs/FIRST_INSTALL_REMOTE.md) | Harmony Elite, 950, Ultimate or Pro 2400 Remote (Skin 116), Micro-USB cable, PC with Python 3.13 or newer *(tested on a Harmony Ultimate, 2013; Ultimate Home, Touch and Pro 2400 supported, untested on physical hardware)* |
 | **Harmony Companion & Smart Control** | [**RF Remotes Guide**](docs/REMOTE.md#harmony-companion--smart-control-screenless-remotes) | Harmony Companion or Smart Control remote; pairs directly over 2.4 GHz RF (no USB connection or rooting needed) |
-| **Android Companion App** | [Download APK from Releases](https://github.com/iranl/harmony-ng/releases) | Android phone or tablet (Android 6 or newer) |
+| **Android Companion App** | [Download APK from Releases](https://github.com/iranl/harmony-ng/releases) | Android phone or tablet (Android 6 or newer); with authentication on, the app keeps an access token, never your password ([details](docs/FIRST_INSTALL_HUB.md#5-accessing-the-web-console--android-app)) |
 | **Web UI** | Pre-installed on Hub at `http://<hub-ip>:8089` | Modern web browser |
 | **Ethernet Setup** | [**Ethernet & Network Guide**](docs/ETHERNET_AND_NETWORK_SETUP.md) | Native onboard RJ45/PoE (Pro 2400) or OTG Micro-USB Ethernet Adapter (Standard Hub) |
 
@@ -168,7 +168,8 @@ While HarmonyNG restores complete local independence and dramatically reduces me
 │   ├── RNDIS_AND_NETWORK_SETUP.md # USB network (RNDIS) driver and setup guide
 │   ├── openapi.yaml        # OpenAPI 3.1 description of the HTTP API
 │   ├── index.html          # Swagger UI page for openapi.yaml (GitHub Pages)
-│   └── OFFLINE_UNBRICK_AND_ROOT_GUIDE.md  # Recovery, UART, and SPI flash guide
+│   ├── OFFLINE_UNBRICK_AND_ROOT_GUIDE.md  # Recovery, UART, and SPI flash guide
+│   └── TRANSLATIONS.md     # Web UI languages: keys, checks, machine translations to check
 ├── drivers/windows/rndis/  # Windows RNDIS driver package for the remote's USB network
 ├── remote/                  # Remote userspace binaries and deployment tools
 │   ├── bootstrap_serial.py # Hardware serial bootstrap
@@ -180,7 +181,7 @@ While HarmonyNG restores complete local independence and dramatically reduces me
 ├── payload/
 │   ├── bin/                # Target MIPS executables for Hub
 │   ├── modules/            # USB Ethernet kernel drivers (r8152, asix, cdc_ether, etc.)
-│   ├── scripts/            # Hub startup (init.sh), network manager, recovery AP
+│   ├── scripts/            # Hub startup (init.sh), network manager
 │   └── source/             # Clean-room native C source code
 │       ├── hub_daemon.c  # Hub micro-daemon and master select() loop
 │       ├── config_store.c  # Atomic JSON device/activity configuration store
@@ -192,14 +193,22 @@ While HarmonyNG restores complete local independence and dramatically reduces me
 │       ├── rf_main.c       # hub_rf: CC2544 RF protocol engine (with rf_*.c)
 │       ├── hub_btstack/    # BTstack Bluetooth HID daemon integration
 │       ├── remote/         # Remote framebuffer GUI & input application (remote_ui)
-│       └── hub_util.c      # Multicall utility (sync, mknod, ehci, eth_fix, dhcpd, portal, sntp, ota-verify)
+│       └── hub_util.c      # Multicall utility (sync, mknod, ehci, eth_fix, sntp, ota-verify)
 └── tools/
     ├── backup_hub.py       # Golden and rolling tar backups of the Hub's configuration over SSH
     ├── factory_reset.py    # Revert to stock: runs the device's factory_reset.sh (deletes settings and keys)
     ├── harmony_firmware.py # SUS firmware check, download, flasher & icon extractor
+    ├── harmony_hid.py      # USB HID client for the Hub and the touchscreen remotes (no dependencies)
+    ├── migrate_hub_configs.py # Stock, v1.x and backup-bundle configurations to today's devices/activities
+    ├── ota_sign.c          # Ed25519 key and signature tool for the OTA manifest (release workflow)
+    ├── remote_render/      # Draws the remote's screens on a computer with the firmware's code (PNG)
     ├── restore_stock.py    # All-in-one stock restore and configuration recovery tool
+    ├── rf_debug/           # rf_query and rf_sniff: CC2544 radio debug tools for the Hub
     ├── root_hub_usb.py     # USB HID root unlock tool with auto stock backup (.tar)
-    └── unbrick_recovery/   # SPI flash and Dropbear emergency recovery tools
+    ├── setup_remote_driver.ps1 # Windows: RNDIS driver and 192.168.2.2 for the remote's USB network
+    ├── ssh_hostkeys.py     # SSH host key policy shared by the host tools (--reset-host-key)
+    ├── unbrick_recovery/   # Tools to get Dropbear back onto a Hub without SSH (file receiver + sender)
+    └── usb_state.py        # USB device state, Windows driver and IP checks for the host tools
 ```
 
 ---
@@ -254,11 +263,15 @@ python -m pip install pyyaml aioharmony==1.0.8
 ./tests/run_host_tools.sh     # host tools tests
 ```
 
-CI runs both on Python 3.13, as two jobs. The firmware tests run on every change: they need
+CI runs both on Python 3.13. The firmware tests run on every change, split in four groups on
+separate machines at the same time (`SUITE_GROUP=1` to `4` runs one group locally): they need
 `gcc`, build `hub_daemon` and the other firmware code for the PC and run it against mock
 hardware. The host tools tests (install, deploy, backup, recovery, migration and build tools)
 run when a `.py` file or `build/`, `remote/`, `scripts/` or `tools/` changes. Neither needs a
 Hub or a remote.
+
+The web UIs come in six languages; see [`docs/TRANSLATIONS.md`](docs/TRANSLATIONS.md) for how texts
+are translated and how to check them.
 
 ---
 
