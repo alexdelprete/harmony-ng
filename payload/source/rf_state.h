@@ -8,6 +8,16 @@
 #include "cJSON.h"
 #include "rf_proto.h"
 
+
+static inline int rf_create_thread(pthread_t *th, size_t stack_size, void *(*start_routine)(void *), void *arg) {
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setstacksize(&attr, stack_size > 0 ? stack_size : (64 * 1024));
+    int rc = pthread_create(th, &attr, start_routine, arg);
+    pthread_attr_destroy(&attr);
+    return rc;
+}
+
 #define RFSPI_DEV          "/dev/rfspi"
 #define RFFW_DEV           "/dev/rffw"
 #define CC2544_FW          "/lib/firmware/cc2544.bin"
@@ -18,7 +28,8 @@
 #endif
 #define CURRENT_ACT_FILE       "/data/harmony/current_activity"
 
-#define MAX_PAIRED_REMOTES 2
+#include "remote_slots.h"
+#define MAX_PAIRED_REMOTES REMOTE_SLOT_MAX
 
 #define LOG_LEVEL_ERR   0
 #define LOG_LEVEL_WARN  1
@@ -65,6 +76,9 @@ typedef struct {
     char name[16];
     bool active;
     bool link_lost;
+    /* a harmony-ng frame came from the slot since hub_rf started: a pipe table entry alone can be
+     * an old pairing (a used Hub, a replaced Companion) that no remote answers on */
+    bool heard;
     uint64_t last_seen_ms;
     remote_model_t model;
     uint16_t equad_id;
@@ -117,6 +131,11 @@ typedef struct {
 
 /* Globals */
 extern volatile bool g_running;
+/* Set by POST /api/rf/restart (hub_daemon, after a backup import that restored the slot table):
+ * the main loop exits once no config push, update or pairing runs, and init.sh starts hub_rf
+ * again, which reads the slot table, the slot state and the pipe table afresh */
+extern volatile bool g_restart_requested;
+bool rf_restart_due(void); /* rf_main.c */
 extern int g_rf_fd;
 extern pthread_mutex_t g_rf_mutex;
 extern uint8_t g_paired_addr[4];
@@ -130,6 +149,8 @@ extern remote_battery_t g_remote_batteries[MAX_PAIRED_REMOTES];
 extern remote_version_t g_remote_versions[MAX_PAIRED_REMOTES];
 extern remote_link_stats_t g_remote_link[MAX_PAIRED_REMOTES];
 extern paired_remote_t g_paired_remotes[MAX_PAIRED_REMOTES];
+/* True while any slot holds a paired remote */
+bool rf_any_slot_active(void);
 extern rf_ota_state_t g_rf_ota;
 extern pthread_mutex_t g_ota_lock;
 extern int g_debug_logging;
@@ -167,7 +188,50 @@ void rf_slot_forget(uint8_t slot);
 /* Gives a report made before the clock was set its reported_at; returns 1 when it changed one */
 int rf_battery_fix_times(void);
 void mark_remote_slot_active(uint8_t slot);
+
+/* Slots and CC2544 pipes. The radio picks the pipe of a new remote by itself; the slot is the
+ * number the user picked (POST /api/rf/pair?slot=N) and the one every map, setting, file, API
+ * route and log of hub_rf uses. Only rf_spi.c (frames in and out, pipe-table replies) and the
+ * unpair command translate. The table is a permutation of 1..MAX_PAIRED_REMOTES, the same
+ * numbers until a pairing into a chosen slot changes it, kept in g_rf_slot_map_path as the pipe of
+ * slots 1 to MAX_PAIRED_REMOTES ("1 2 3 4 5 6"). Numbers outside 1..MAX_PAIRED_REMOTES pass
+ * unchanged. */
+extern const char *g_rf_slot_map_path;
+uint8_t rf_slot_to_pipe(uint8_t slot);
+uint8_t rf_pipe_to_slot(uint8_t pipe);
+void rf_slot_map_load(void);
+/* The table file changed under a running hub_rf (a backup import): takes it over and gives each
+ * slot the per-slot state of the remote whose pipe it now is (version file, battery cache,
+ * settings file; a slot left without a remote loses them). For the restart that follows: the new hub_rf reads
+ * those by slot number. Returns the number of slots that changed. */
+int rf_slot_map_follow_file(void);
+/* The next remote that pairs goes to this slot (0: the slot of the pipe the radio picks) */
+/* The slot a pairing should land in (0: none). new_window: the pairing window opens now, so
+ * the pipes that hold a remote are noted; a second request in the same window only changes
+ * the slot. */
+void rf_slot_map_set_pair_target(uint8_t slot, bool new_window);
+/* A pipe-table reply: whether the pipe holds a remote (EquadID), or an unpair emptied it */
+void rf_slot_map_note_table(uint8_t pipe, bool has_remote);
+/* The CC2544 reported a completed pairing: the chosen slot is kept 15 s more for the pipe-table
+ * reply that decides (a frame never moves a pipe) */
+void rf_slot_map_note_pair_success(void);
+/* A pipe shows a remote (from_pipe_table: its EquadID reply; else a frame from it). While a
+ * pairing into a chosen slot is pending, a pipe-table reply for a pipe that held no remote when
+ * the window opened moves that pipe to the chosen slot; a frame only maps. Returns the slot. */
+uint8_t rf_slot_map_claim_pipe(uint8_t pipe, bool from_pipe_table);
+/* Moves what is known of the remote in slot from to slot to (a pipe moved to a chosen slot) */
+void rf_slot_move_state(uint8_t from, uint8_t to);
+/* Starts a config push in its own thread (a push already running ends this one at once) */
+void rf_request_config_push(void);
+/* What rf_slot_move_state() calls to start that push: set by main() (NULL: none, as in tests that
+ * link the state code without the push code) */
+extern void (*g_rf_push_starter)(void);
+/* A push left out a paired touchscreen slot not heard since the start: the first frame of such a
+ * slot starts the push again (rf_slot_saw_protocol_frame) */
+extern volatile bool g_rf_push_deferred;
 bool is_ota_busy(void);
+/* A config push is running (config_push_worker): an OTA start waits for it to end */
+extern volatile bool g_config_push_running;
 /* POST json_body to 127.0.0.1:port; returns the HTTP status, -1 when nothing came back */
 int http_post_local(int port, const char *endpoint, const char *json_body);
 
@@ -183,6 +247,9 @@ void rf_state_note_config_pushed(int slot, int config_ver);
 int http_request_local(int port, const char *method, const char *endpoint, const char *json_body,
                        char *resp, size_t resp_len, int timeout_ms);
 bool is_companion_slot(uint8_t slot);
+/* The slot named by rf_sync_pending_details.json (0: every remote, or no details); its "diff"
+ * text goes to diff when one is given */
+int rf_sync_pending_slot(char *diff, size_t diff_len);
 /* Family name for logs: "juniper", "companion", "smart_control", "unknown" */
 const char *get_remote_model_name(remote_model_t model);
 

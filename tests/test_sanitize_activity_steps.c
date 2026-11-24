@@ -5,6 +5,8 @@
 #include <string.h>
 #include <assert.h>
 
+/* No plugins installed: the sanitizer only asks which device types belong to a plugin */
+
 int main(void) {
     printf("[*] Testing sanitize_activity_steps (canonical single 'delay' key, no duplicates)...\n");
 
@@ -96,6 +98,20 @@ int main(void) {
     dev0 = cJSON_GetObjectItemCaseSensitive(s0, "deviceId");
     assert(dev0 && cJSON_IsString(dev0) && strcmp(dev0->valuestring, "3") == 0);
     cJSON_Delete(steps7);
+
+    /* 8. Activities are sorted by Display Order (stable; no order goes last) */
+    cJSON *acts = cJSON_Parse("{\"activities\":[{\"id\":\"a\",\"name\":\"A\",\"order\":3},{\"id\":\"b\",\"name\":\"B\"},"
+                              "{\"id\":\"c\",\"name\":\"C\",\"order\":1},{\"id\":\"d\",\"name\":\"D\",\"order\":3}]}");
+    assert(acts != NULL);
+    sanitize_activities_json(acts);
+    const char *want[] = { "c", "a", "d", "b" };
+    cJSON *arr = cJSON_GetObjectItemCaseSensitive(acts, "activities");
+    assert(cJSON_GetArraySize(arr) == 4);
+    for (int i = 0; i < 4; i++) {
+        cJSON *id = cJSON_GetObjectItemCaseSensitive(cJSON_GetArrayItem(arr, i), "id");
+        assert(id && strcmp(id->valuestring, want[i]) == 0);
+    }
+    cJSON_Delete(acts);
 
     printf("[+] ALL sanitize_activity_steps tests passed (100%% canonical, zero duplicate keys)!\n");
     return 0;

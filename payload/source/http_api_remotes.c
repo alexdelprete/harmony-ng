@@ -6,6 +6,7 @@
 #include "bt_common.h"
 #include "hub_mqtt.h"
 #include "cJSON.h"
+#include "remote_slots.h"
 
 #include <stdio.h>
 #include <ctype.h>
@@ -23,12 +24,11 @@
 #include <time.h>
 #include <sys/stat.h>
 
-/* Slot number 1 or 2 from a query parameter, else def */
+/* Slot number 1 to REMOTE_SLOT_MAX from a query parameter, else def */
 static int query_slot(const char *query, const char *name, int def) {
     char v[8];
     http_query_param(query, name, v, sizeof(v));
-    if (strcmp(v, "1") == 0) return 1;
-    if (strcmp(v, "2") == 0) return 2;
+    if (v[0] >= '1' && v[0] <= '0' + REMOTE_SLOT_MAX && v[1] == '\0') return v[0] - '0';
     return def;
 }
 
@@ -450,18 +450,14 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
         cJSON_AddStringToObject(err, "rf_address", "None");
         cJSON_AddStringToObject(err, "hub_rf_address", "None");
         cJSON *slots = cJSON_AddArrayToObject(err, "slots");
-        cJSON *s1 = cJSON_CreateObject();
-        cJSON_AddNumberToObject(s1, "slot", 1);
-        cJSON_AddBoolToObject(s1, "active", 0);
-        cJSON_AddStringToObject(s1, "address", "None");
-        cJSON_AddStringToObject(s1, "rf_address", "None");
-        cJSON_AddItemToArray(slots, s1);
-        cJSON *s2 = cJSON_CreateObject();
-        cJSON_AddNumberToObject(s2, "slot", 2);
-        cJSON_AddBoolToObject(s2, "active", 0);
-        cJSON_AddStringToObject(s2, "address", "None");
-        cJSON_AddStringToObject(s2, "rf_address", "None");
-        cJSON_AddItemToArray(slots, s2);
+        for (int n = 1; n <= REMOTE_SLOT_MAX; n++) {
+            cJSON *s = cJSON_CreateObject();
+            cJSON_AddNumberToObject(s, "slot", n);
+            cJSON_AddBoolToObject(s, "active", 0);
+            cJSON_AddStringToObject(s, "address", "None");
+            cJSON_AddStringToObject(s, "rf_address", "None");
+            cJSON_AddItemToArray(slots, s);
+        }
         send_cjson_resp(client_fd, 200, err);
         cJSON_Delete(err);
         close(client_fd);
@@ -516,7 +512,7 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
             cJSON *jp = cJSON_GetObjectItemCaseSensitive(req_j, "pulseMs");
             if (!jp) jp = cJSON_GetObjectItemCaseSensitive(req_j, "pulse_ms");
             cJSON *js = cJSON_GetObjectItemCaseSensitive(req_j, "slot");
-            if (js && cJSON_IsNumber(js) && js->valueint >= 1 && js->valueint <= 2) {
+            if (js && cJSON_IsNumber(js) && js->valueint >= 1 && js->valueint <= REMOTE_SLOT_MAX) {
                 req_slot = js->valueint;
                 has_slot = 1;
             }
@@ -581,7 +577,7 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
             cJSON *bj = cJSON_Parse(body);
             if (bj) {
                 cJSON *js = cJSON_GetObjectItemCaseSensitive(bj, "slot");
-                if (js && cJSON_IsNumber(js) && js->valueint == 2) slot = 2;
+                if (js && cJSON_IsNumber(js) && js->valueint >= 2 && js->valueint <= REMOTE_SLOT_MAX) slot = js->valueint;
                 cJSON_Delete(bj);
             }
             char fname[64];
@@ -615,8 +611,8 @@ int http_api_remotes_handle(int client_fd, const char *method, const char *clean
             if (bj) {
                 cJSON *jf = cJSON_GetObjectItemCaseSensitive(bj, "from");
                 cJSON *jt = cJSON_GetObjectItemCaseSensitive(bj, "to");
-                if (jf && cJSON_IsNumber(jf) && jf->valueint >= 1 && jf->valueint <= 2) from_slot = jf->valueint;
-                if (jt && cJSON_IsNumber(jt) && jt->valueint >= 1 && jt->valueint <= 2) to_slot = jt->valueint;
+                if (jf && cJSON_IsNumber(jf) && jf->valueint >= 1 && jf->valueint <= REMOTE_SLOT_MAX) from_slot = jf->valueint;
+                if (jt && cJSON_IsNumber(jt) && jt->valueint >= 1 && jt->valueint <= REMOTE_SLOT_MAX) to_slot = jt->valueint;
                 cJSON_Delete(bj);
             }
         }
@@ -1260,7 +1256,7 @@ static void key_channel_handle(const char *msg) {
     j = cJSON_GetObjectItemCaseSensitive(o, "ts");
     uint64_t ts = (j && cJSON_IsNumber(j) && j->valuedouble > 0) ? (uint64_t)j->valuedouble : 0;
     j = cJSON_GetObjectItemCaseSensitive(o, "slot");
-    int slot = (j && cJSON_IsNumber(j) && j->valueint >= 1 && j->valueint <= 2) ? j->valueint : 1;
+    int slot = (j && cJSON_IsNumber(j) && j->valueint >= 1 && j->valueint <= REMOTE_SLOT_MAX) ? j->valueint : 1;
     cJSON_Delete(o);
     if (!button[0] || !action[0]) return;
 

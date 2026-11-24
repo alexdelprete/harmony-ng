@@ -4,6 +4,9 @@
 #include "cJSON.h"
 #include "bt_common.h"
 #include "json_number.h"
+#include "plugin_mgr.h"
+#include "cmd_range.h"
+#include "net_device.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,6 +28,188 @@ static const char *clean_display_name(const char *in, char *out, size_t out_sz) 
     return out;
 }
 
+/* ---- HTTP and TCP devices (net_device.h) ---- */
+
+static const char *net_str(const cJSON *o, const char *key) {
+    const cJSON *j = cJSON_GetObjectItemCaseSensitive(o, key);
+    return cJSON_IsString(j) && j->valuestring ? j->valuestring : NULL;
+}
+
+/* Text without control characters (newlines too when !multiline), at most max bytes */
+static int net_text_ok(const char *s, size_t max, int multiline) {
+    if (!s || strlen(s) > max) return 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p == 0x7f) return 0;
+        if (*p < 0x20 && !(*p == '\t' || (multiline && (*p == '\n' || *p == '\r')))) return 0;
+    }
+    return 1;
+}
+
+/* Host name, IPv4 or IPv6 address: letters, digits, '.', '-', '_', ':'. Not the Hub itself
+ * (loopback: a device there would let a device test call the Hub's own API as admin), and not
+ * starting with '-' (hub_fetch would read it as an option). */
+int net_host_valid(const char *h) {
+    size_t n = h ? strlen(h) : 0;
+    if (n == 0 || n > 253 || h[0] == '-') return 0;
+    if (strcasecmp(h, "localhost") == 0 || strcasecmp(h, "localhost.") == 0 || strncmp(h, "127.", 4) == 0 ||
+            strcmp(h, "::1") == 0 || strcmp(h, "0.0.0.0") == 0 || strcmp(h, "::") == 0) {
+#ifdef TEST_HARNESS
+        /* the host tests run their devices on 127.0.0.1 and name their ports in
+         * HARMONY_TEST_NET_LOOPBACK_PORTS; net_action.c checks the port of every send */
+        const char *tp = getenv("HARMONY_TEST_NET_LOOPBACK_PORTS");
+        if (!(tp && tp[0] && strcmp(h, "127.0.0.1") == 0))
+#endif
+        return 0;
+    }
+    for (const char *p = h; *p; p++) {
+        if (!isalnum((unsigned char)*p) && *p != '.' && *p != '-' && *p != '_' && *p != ':') return 0;
+    }
+    return 1;
+}
+
+/* An HTTP header name (RFC 9110 token); the client sets Host, Connection, Content-Length */
+int net_header_name_ok(const char *n) {
+    size_t len = n ? strlen(n) : 0;
+    if (len == 0 || len > 64) return 0;
+    if (strcasecmp(n, "Host") == 0 || strcasecmp(n, "Connection") == 0 ||
+            strcasecmp(n, "Content-Length") == 0 || strcasecmp(n, "Transfer-Encoding") == 0) return 0;
+    for (const char *p = n; *p; p++) {
+        if (!isalnum((unsigned char)*p) && !strchr("!#$%&'*+-.^_`|~", *p)) return 0;
+    }
+    return 1;
+}
+
+static void sanitize_net_device(const cJSON *src, cJSON *cdev, int kind) {
+    const char *host = net_str(src, "netHost");
+    cJSON_AddStringToObject(cdev, "netHost", net_host_valid(host) ? host : "");
+
+    const cJSON *jtls = cJSON_GetObjectItemCaseSensitive(src, "netTls");
+    int tls = cJSON_IsTrue(jtls) || (cJSON_IsNumber(jtls) && jtls->valueint == 1);
+    cJSON_AddBoolToObject(cdev, "netTls", tls);
+
+    const cJSON *jport = cJSON_GetObjectItemCaseSensitive(src, "netPort");
+    int port = cJSON_IsNumber(jport) ? json_number_int(jport, 0, 65535, 0) : 0;
+    if (port <= 0 && kind == NET_KIND_HTTP) port = tls ? 443 : 80;
+    cJSON_AddNumberToObject(cdev, "netPort", port > 0 ? port : 0);
+
+    const char *verify = net_str(src, "netTlsVerify");
+    if (!verify || (strcmp(verify, "pin") != 0 && strcmp(verify, "insecure") != 0)) verify = "verify";
+    cJSON_AddStringToObject(cdev, "netTlsVerify", verify);
+
+    const cJSON *jto = cJSON_GetObjectItemCaseSensitive(src, "netTimeoutMs");
+    int to = cJSON_IsNumber(jto) ? json_number_int(jto, 0, NET_TIMEOUT_MAX_MS, NET_TIMEOUT_DEFAULT_MS)
+                                 : NET_TIMEOUT_DEFAULT_MS;
+    if (to < NET_TIMEOUT_MIN_MS) to = NET_TIMEOUT_MIN_MS;
+    cJSON_AddNumberToObject(cdev, "netTimeoutMs", to);
+
+    if (kind != NET_KIND_HTTP) return;
+
+    cJSON *hdrs = cJSON_AddArrayToObject(cdev, "httpHeaders");
+    const cJSON *sh = cJSON_GetObjectItemCaseSensitive(src, "httpHeaders");
+    const cJSON *h = NULL;
+    int nh = 0;
+    cJSON_ArrayForEach(h, sh) {
+        const char *hn = net_str(h, "name"), *hv = net_str(h, "value");
+        if (nh >= NET_MAX_HEADERS || !net_header_name_ok(hn) || !net_text_ok(hv ? hv : "", 1024, 0)) continue;
+        cJSON *o = cJSON_CreateObject();
+        cJSON_AddStringToObject(o, "name", hn);
+        cJSON_AddStringToObject(o, "value", hv ? hv : "");
+        cJSON_AddItemToArray(hdrs, o);
+        nh++;
+    }
+
+    const char *auth = net_str(src, "httpAuthType");
+    if (!auth || (strcmp(auth, "basic") != 0 && strcmp(auth, "bearer") != 0)) auth = "none";
+    cJSON_AddStringToObject(cdev, "httpAuthType", auth);
+    const char *user = net_str(src, "httpUser");
+    const char *pass = net_str(src, "httpPassword");
+    const char *token = net_str(src, "httpToken");
+    /* Credentials of the other auth types are dropped: only the chosen one is stored */
+    if (strcmp(auth, "basic") == 0) {
+        cJSON_AddStringToObject(cdev, "httpUser", net_text_ok(user, 128, 0) && !strchr(user, ':') ? user : "");
+        cJSON_AddStringToObject(cdev, "httpPassword", net_text_ok(pass, 256, 0) ? pass : "");
+    } else if (strcmp(auth, "bearer") == 0) {
+        cJSON_AddStringToObject(cdev, "httpToken", net_text_ok(token, 1024, 0) ? token : "");
+    }
+}
+
+static void set_string(cJSON *o, const char *key, const char *val) {
+    if (cJSON_GetObjectItemCaseSensitive(o, key))
+        cJSON_ReplaceItemInObjectCaseSensitive(o, key, cJSON_CreateString(val));
+    else
+        cJSON_AddStringToObject(o, key, val);
+}
+
+static int hex_payload_ok(const char *s) {
+    int digits = 0;
+    for (const char *p = s; *p; p++) {
+        if (isxdigit((unsigned char)*p)) digits++;
+        else if (*p != ' ' && *p != ':') return 0;
+    }
+    return digits > 0 && digits % 2 == 0;
+}
+
+static void sanitize_net_command(const cJSON *src, cJSON *ccmd, int kind, const char *name) {
+    char kc[160];
+    snprintf(kc, sizeof(kc), "%s:%s", kind == NET_KIND_HTTP ? "HTTP" : "TCP", name);
+    set_string(ccmd, "keyCode", kc);
+    set_string(ccmd, "raw", kc);
+    if (kind == NET_KIND_HTTP) {
+        static const char *const methods[] = { "GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", NULL };
+        const char *m = net_str(src, "httpMethod");
+        const char *method = "GET";
+        for (int i = 0; m && methods[i]; i++) {
+            if (strcasecmp(m, methods[i]) == 0) method = methods[i];
+        }
+        cJSON_AddStringToObject(ccmd, "httpMethod", method);
+        const char *path = net_str(src, "httpPath");
+        int path_ok = path && path[0] == '/' && net_text_ok(path, 1024, 0) && !strchr(path, ' ');
+        cJSON_AddStringToObject(ccmd, "httpPath", path_ok ? path : "/");
+        const char *body = net_str(src, "httpBody");
+        cJSON_AddStringToObject(ccmd, "httpBody", net_text_ok(body, NET_BODY_MAX, 1) ? body : "");
+        const char *ct = net_str(src, "httpContentType");
+        cJSON_AddStringToObject(ccmd, "httpContentType", net_text_ok(ct, 128, 0) ? ct : "");
+    } else {
+        const char *fmt = net_str(src, "tcpFormat");
+        int hex = fmt && strcmp(fmt, "hex") == 0;
+        const char *pl = net_str(src, "tcpPayload");
+        int ok = hex ? (pl && strlen(pl) <= NET_BODY_MAX * 3 && hex_payload_ok(pl))
+                     : net_text_ok(pl, NET_BODY_MAX, 1);
+        cJSON_AddStringToObject(ccmd, "tcpFormat", hex ? "hex" : "text");
+        cJSON_AddStringToObject(ccmd, "tcpPayload", ok ? pl : "");
+    }
+}
+
+/* GET /api/devices and /api/inventory: stored secrets as "" plus has* flags. Returns the
+ * number of devices changed (0: nothing to hide, the caller can send the original). */
+int config_mask_device_secrets(cJSON *root) {
+    int changed = 0;
+    cJSON *devs = root ? cJSON_GetObjectItemCaseSensitive(root, "devices") : NULL;
+    cJSON *d = NULL;
+    cJSON_ArrayForEach(d, devs) {
+        static const char *const keys[][2] = { { "httpPassword", "hasHttpPassword" },
+                                               { "httpToken", "hasHttpToken" } };
+        for (int i = 0; i < 2; i++) {
+            const char *v = net_str(d, keys[i][0]);
+            if (!v) continue;
+            int has = v[0] != '\0';
+            set_string(d, keys[i][0], "");
+            cJSON_AddBoolToObject(d, keys[i][1], has);
+            changed++;
+        }
+    }
+    return changed;
+}
+
+int config_devices_have_secrets(const cJSON *root) {
+    const cJSON *devs = root ? cJSON_GetObjectItemCaseSensitive(root, "devices") : NULL;
+    const cJSON *d = NULL;
+    cJSON_ArrayForEach(d, devs) {
+        if (net_str(d, "httpPassword") || net_str(d, "httpToken")) return 1;
+    }
+    return 0;
+}
+
 /* Sanitize devices JSON:
  * 1. Ensure canonical {"devices": [...]} structure
  * 2. Normalize and validate fields to clean camelCase canonical schema
@@ -35,6 +220,16 @@ void sanitize_devices_json(cJSON *root) {
 
     cJSON *devs = cJSON_GetObjectItemCaseSensitive(root, "devices");
     if (!devs || !cJSON_IsArray(devs)) return;
+
+    /* Before commandPorts 1 every IR command was given its device's controlPort of that time,
+     * and no send read it. A command's port is now used before the device's: those copies are
+     * dropped once, so a later Blaster Assignment still reaches every command. */
+    cJSON *jcp_ver = cJSON_GetObjectItemCaseSensitive(root, "commandPorts");
+    int own_ports = cJSON_IsNumber(jcp_ver) && jcp_ver->valuedouble >= 1;
+    if (!own_ports) {
+        cJSON_DeleteItemFromObjectCaseSensitive(root, "commandPorts");
+        cJSON_AddNumberToObject(root, "commandPorts", 1);
+    }
 
     cJSON *clean_devs = cJSON_CreateArray();
 
@@ -87,18 +282,32 @@ void sanitize_devices_json(cJSON *root) {
         cJSON *jtype = cJSON_GetObjectItemCaseSensitive(src_d, "type");
         const char *type_str = (jtype && jtype->valuestring) ? jtype->valuestring : "IR";
 
+        /* A plugin device only through its "plugin" field or a "plugin:<id>" type, with a safe
+         * id: the free-text type of an IR device is never compared with plugin names. That
+         * choice wins over the MQTT and Bluetooth guesses below: a plugin whose name says
+         * "Bluetooth" (the new UI puts it in the manufacturer) lost its plugin. */
+        char res_plug_id[64] = {0};
+        int is_plugin = plugin_mgr_device_plugin_id(src_d, res_plug_id, sizeof(res_plug_id));
+
+        /* HTTP and TCP only by their exact type names; they win over the MQTT and
+         * Bluetooth guesses (a device named "MQTT bridge" that is driven over HTTP) */
+        int net_kind = is_plugin ? NET_KIND_NONE : net_device_kind(src_d);
+
         cJSON *jmqtt_en = cJSON_GetObjectItemCaseSensitive(src_d, "mqttEnabled");
-        int is_mqtt = (strcasecmp(type_str, "MQTT") == 0 ||
+        int is_mqtt = !is_plugin && !net_kind && (strcasecmp(type_str, "MQTT") == 0 ||
                        (jmqtt_en && (cJSON_IsTrue(jmqtt_en) || (cJSON_IsNumber(jmqtt_en) && jmqtt_en->valueint == 1))));
 
         cJSON *jtrans = cJSON_GetObjectItemCaseSensitive(src_d, "transport");
-        int is_bt = (!is_mqtt) && ((jtrans && cJSON_IsNumber(jtrans) && jtrans->valueint == 32) ||
+        int is_bt = !is_plugin && !net_kind && !is_mqtt && ((jtrans && cJSON_IsNumber(jtrans) && jtrans->valueint == 32) ||
                        strcasecmp(type_str, "BT") == 0 || strcasecmp(type_str, "Bluetooth") == 0 ||
                        strcasestr(type_str, "bluetooth") != NULL || strcasestr(mfg_str, "bluetooth") != NULL ||
                        strcasecmp(type_str, "BTHID") == 0);
 
         const char *final_type = "IR";
-        if (is_mqtt) {
+        char plug_type_buf[128] = {0};
+        if (net_kind) {
+            final_type = net_kind == NET_KIND_HTTP ? "HTTP" : "TCP";
+        } else if (is_mqtt) {
             final_type = (type_str && type_str[0]) ? type_str : "MQTT";
         } else if (is_bt) {
             /* A device that is Bluetooth only by "transport": 32 must say so in its type: the
@@ -107,6 +316,17 @@ void sanitize_devices_json(cJSON *root) {
             int type_says_bt = strcasecmp(type_str, "BT") == 0 || strcasestr(type_str, "bluetooth") != NULL ||
                                strcasecmp(type_str, "BTHID") == 0 || strcasestr(mfg_str, "bluetooth") != NULL;
             final_type = (type_str && type_str[0] && type_says_bt) ? type_str : "BT";
+        } else if (is_plugin) {
+            if (res_plug_id[0]) {
+                if (type_str && type_str[0] && strncasecmp(type_str, "plugin:", 7) != 0 && strcasecmp(type_str, "plugin") != 0) {
+                    final_type = type_str; /* preserve custom device type, e.g. Roku, PS5 */
+                } else {
+                    snprintf(plug_type_buf, sizeof(plug_type_buf), "plugin:%s", res_plug_id);
+                    final_type = plug_type_buf;
+                }
+            } else {
+                final_type = (type_str && type_str[0]) ? type_str : "plugin";
+            }
         } else if (type_str && type_str[0]) {
             final_type = type_str;
         }
@@ -118,7 +338,7 @@ void sanitize_devices_json(cJSON *root) {
             else if (cJSON_IsNumber(jicon)) cJSON_AddNumberToObject(cdev, "icon", jicon->valueint);
         }
 
-        if (!is_bt && !is_mqtt) {
+        if (!is_bt && !is_mqtt && !is_plugin && !net_kind) {
             cJSON *jcp = cJSON_GetObjectItemCaseSensitive(src_d, "controlPort");
             int cp_val = (jcp && cJSON_IsNumber(jcp)) ? jcp->valueint : 7;
             cJSON_AddNumberToObject(cdev, "controlPort", (cp_val >= 0 && cp_val <= 7) ? cp_val : 7);
@@ -154,6 +374,16 @@ void sanitize_devices_json(cJSON *root) {
         int pao = (jpao && (cJSON_IsTrue(jpao) || (cJSON_IsNumber(jpao) && jpao->valuedouble > 0) ||
                    (cJSON_IsString(jpao) && (strcmp(jpao->valuestring, "1") == 0 || strcasecmp(jpao->valuestring, "true") == 0))));
         cJSON_AddBoolToObject(cdev, "isPowerAlwaysOn", pao ? 1 : 0);
+
+        /* Left out of the remote's device lists; its commands still work from activity keys */
+        cJSON *jhide = cJSON_GetObjectItemCaseSensitive(src_d, "hideOnRemote");
+        if (cJSON_IsTrue(jhide) || (cJSON_IsNumber(jhide) && jhide->valuedouble > 0))
+            cJSON_AddTrueToObject(cdev, "hideOnRemote");
+
+        /* Left out of the web UIs' Devices tab only (not the remote) */
+        cJSON *jhtab = cJSON_GetObjectItemCaseSensitive(src_d, "hideInDevicesTab");
+        if (cJSON_IsTrue(jhtab) || (cJSON_IsNumber(jhtab) && jhtab->valuedouble > 0))
+            cJSON_AddTrueToObject(cdev, "hideInDevicesTab");
 
         /* The device's Bluetooth host: bdaddr, else the older btHost key. The rebuilt object
          * keeps only bdaddr, so a btHost-only device would otherwise lose its host on save. */
@@ -207,6 +437,25 @@ void sanitize_devices_json(cJSON *root) {
             cJSON_AddNumberToObject(cdev, "mqttPulseMs", (jpul && cJSON_IsNumber(jpul)) ? jpul->valueint : 1000);
         }
 
+        if (net_kind) sanitize_net_device(src_d, cdev, net_kind);
+
+        /* Plugin */
+        if (res_plug_id[0]) {
+            cJSON_AddStringToObject(cdev, "plugin", res_plug_id);
+        }
+
+        cJSON *j_cfg = cJSON_GetObjectItemCaseSensitive(src_d, "config");
+        if (j_cfg && cJSON_IsObject(j_cfg)) {
+            cJSON_AddItemToObject(cdev, "config", cJSON_Duplicate(j_cfg, 1));
+        } else if (j_cfg && cJSON_IsString(j_cfg) && j_cfg->valuestring && j_cfg->valuestring[0]) {
+            cJSON *parsed = cJSON_Parse(j_cfg->valuestring);
+            if (parsed && cJSON_IsObject(parsed)) {
+                cJSON_AddItemToObject(cdev, "config", parsed);
+            } else if (parsed) {
+                cJSON_Delete(parsed);
+            }
+        }
+
         /* Power Sequences */
         cJSON *po = cJSON_GetObjectItemCaseSensitive(src_d, "powerOnSequence");
         if (po && cJSON_IsArray(po)) {
@@ -248,20 +497,20 @@ void sanitize_devices_json(cJSON *root) {
 
                 cJSON *ckc = cJSON_GetObjectItemCaseSensitive(c, "keyCode");
                 const char *kc_str = (ckc && ckc->valuestring) ? ckc->valuestring : "";
-                cJSON_AddStringToObject(ccmd, "keyCode", kc_str);
 
                 cJSON *craw = cJSON_GetObjectItemCaseSensitive(c, "raw");
                 const char *raw_str = (craw && craw->valuestring) ? craw->valuestring : "";
-                cJSON_AddStringToObject(ccmd, "raw", raw_str[0] ? raw_str : kc_str);
 
-                if (!is_bt && !is_mqtt) {
+                const char *raw_val = (raw_str && raw_str[0]) ? raw_str : kc_str;
+                const char *kc_val = (kc_str && kc_str[0]) ? kc_str : raw_val;
+                cJSON_AddStringToObject(ccmd, "keyCode", kc_val);
+                cJSON_AddStringToObject(ccmd, "raw", raw_val);
+
+                if (!is_bt && !is_mqtt && !is_plugin && !net_kind) {
+                    /* a command's own port mask 1..7 (Emitter Port); none: the device's controlPort */
                     cJSON *cp_item = cJSON_GetObjectItemCaseSensitive(c, "port");
-                    cJSON *dev_cp = cJSON_GetObjectItemCaseSensitive(cdev, "controlPort");
-                    /* ports are the same 0..7 as controlPort; the sender keeps repeats in 8 bits */
-                    int dev_port = dev_cp ? dev_cp->valueint : 7;
-                    int port_val = (cp_item && cJSON_IsNumber(cp_item)) ? json_number_int(cp_item, -1, 8, dev_port) : dev_port;
-                    if (port_val < 0 || port_val > 7) port_val = dev_port;
-                    cJSON_AddNumberToObject(ccmd, "port", port_val);
+                    int port_val = (own_ports && cp_item && cJSON_IsNumber(cp_item)) ? json_number_int(cp_item, -1, 8, 0) : 0;
+                    if (port_val >= 1 && port_val <= 7) cJSON_AddNumberToObject(ccmd, "port", port_val);
 
                     cJSON *crep = cJSON_GetObjectItemCaseSensitive(c, "repeats");
                     int rep_val = (crep && cJSON_IsNumber(crep)) ? json_number_int(crep, -1, 256, 3) : 3;
@@ -271,6 +520,8 @@ void sanitize_devices_json(cJSON *root) {
 
                 cJSON *cmacro = cJSON_GetObjectItemCaseSensitive(c, "isMacro");
                 if (cmacro && cJSON_IsTrue(cmacro)) cJSON_AddBoolToObject(ccmd, "isMacro", 1);
+                cmd_range_copy(ccmd, c);
+                if (net_kind && !(cmacro && cJSON_IsTrue(cmacro))) sanitize_net_command(c, ccmd, net_kind, cmd_name);
 
                 cJSON_AddItemToArray(clean_cmds, ccmd);
             }
@@ -395,10 +646,80 @@ void sanitize_activity_steps(cJSON *steps) {
     cJSON_Delete(new_arr);
 }
 
+/* The activity's Display Order; one without a number goes after all numbered ones */
+static double activity_order(const cJSON *a) {
+    const cJSON *o = cJSON_IsObject(a) ? cJSON_GetObjectItemCaseSensitive(a, "order") : NULL;
+    return cJSON_IsNumber(o) ? o->valuedouble : 1e18;
+}
+
+/* Every reader (both web UIs, the remotes' "yours" order, hbus, MQTT) lists the activities in
+ * array order, so the array is kept sorted by Display Order. Stable: equal orders keep their
+ * place. */
+static int sort_activities_by_order(cJSON *acts) {
+    int n = cJSON_GetArraySize(acts);
+    if (n < 2) return 0;
+    cJSON **items = malloc((size_t)n * sizeof(*items));
+    if (!items) return 0;
+    int k = 0;
+    cJSON *a = NULL;
+    cJSON_ArrayForEach(a, acts) items[k++] = a;
+    int moved = 0;
+    for (int i = 1; i < n; i++) {
+        cJSON *cur = items[i];
+        double ord = activity_order(cur);
+        int j = i - 1;
+        while (j >= 0 && activity_order(items[j]) > ord) {
+            items[j + 1] = items[j];
+            j--;
+            moved = 1;
+        }
+        items[j + 1] = cur;
+    }
+    if (moved) {
+        for (int i = 0; i < n; i++) cJSON_DetachItemViaPointer(acts, items[i]);
+        for (int i = 0; i < n; i++) cJSON_AddItemToArray(acts, items[i]);
+    }
+    free(items);
+    return moved;
+}
+
+/* An activity without a Display Order gets its own, after the highest one (99 at most, as the
+ * editor's field), so both web UIs show the number the Hub sorts by. Returns how many got one. */
+static int number_unordered_activities(cJSON *acts) {
+    double max = 0;
+    int missing = 0;
+    cJSON *a = NULL;
+    cJSON_ArrayForEach(a, acts) {
+        if (!cJSON_IsObject(a)) continue;
+        const cJSON *o = cJSON_GetObjectItemCaseSensitive(a, "order");
+        if (cJSON_IsNumber(o)) {
+            if (o->valuedouble > max) max = o->valuedouble;
+        } else {
+            missing++;
+        }
+    }
+    if (!missing) return 0;
+    cJSON_ArrayForEach(a, acts) {
+        if (!cJSON_IsObject(a) || cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(a, "order"))) continue;
+        if (max < 99) max = max + 1 > 99 ? 99 : max + 1;
+        cJSON_DeleteItemFromObjectCaseSensitive(a, "order");
+        cJSON_AddNumberToObject(a, "order", max);
+    }
+    return missing;
+}
+
 void sanitize_activities_json(cJSON *root) {
-    if (!root) return;
+    (void)sanitize_activities_json_changed(root);
+}
+
+int sanitize_activities_json_changed(cJSON *root) {
+    if (!root) return 0;
     cJSON *acts = cJSON_GetObjectItemCaseSensitive(root, "activities");
-    if (!acts || !cJSON_IsArray(acts)) return;
+    if (!acts || !cJSON_IsArray(acts)) return 0;
+
+    /* sorted first: the ones without an order are last, and keep that place with their number */
+    int changed = sort_activities_by_order(acts);
+    changed |= number_unordered_activities(acts) > 0;
 
     cJSON *a = NULL;
     cJSON_ArrayForEach(a, acts) {
@@ -441,4 +762,5 @@ void sanitize_activities_json(cJSON *root) {
         cJSON *stop_seq = cJSON_GetObjectItemCaseSensitive(a, "stopSequence");
         if (stop_seq) sanitize_activity_steps(stop_seq);
     }
+    return changed;
 }

@@ -39,7 +39,7 @@ DROPBEAR_MIPS_PATH = BIN_DIR / "dropbearmulti_mips"
 if str(REPO_DIR) not in sys.path:
     sys.path.insert(0, str(REPO_DIR))
 
-from tools.harmony_hid import HarmonyHid, HUB_PID, HUB_PRO_PID, ALL_HUB_PIDS
+from tools.harmony_hid import HarmonyHid, HUB_PID, HUB_PRO_PID, ALL_HUB_PIDS, usb_open_failure_message
 
 # Shared SSH host key policy (tools/ssh_hostkeys.py, next to this file)
 if str(SCRIPT_DIR) not in sys.path:
@@ -83,12 +83,11 @@ EOF
 chmod 755 /usr/sbin/dropbear.new
 mv -f /usr/sbin/dropbear.new /usr/sbin/dropbear
 ln -sf /data/dropbearmulti /usr/sbin/dropbearkey
-ln -sf /data/dropbearmulti /usr/sbin/dbclient
 ln -sf /data/dropbearmulti /usr/sbin/scp
 
-# Phase 5: Ensure RSA host key exists
-if [ ! -r /etc/dropbear/dropbear_rsa_host_key ]; then
-    /data/dropbearmulti dropbearkey -t rsa -f /etc/dropbear/dropbear_rsa_host_key
+# Phase 5: Ensure the Ed25519 host key exists (the only host key type the server loads)
+if [ ! -r /etc/dropbear/dropbear_ed25519_host_key ]; then
+    /data/dropbearmulti dropbearkey -t ed25519 -f /etc/dropbear/dropbear_ed25519_host_key
 fi
 
 # Phase 6: Start Dropbear SSH daemon in background and let rcS continue (key logins only)
@@ -116,6 +115,32 @@ def wifi_password(args, ssid: str) -> str | None:
     return getpass.getpass(f"Enter Wi-Fi password for '{ssid}': ")
 
 
+def parse_skin_id(value: object) -> int | None:
+    """Skin id from the Hub's /sys/sysinfo: hex as the Hub reports it ("0x6A") or decimal ("106").
+
+    None when it is missing or unreadable. A plain int() refused the hex form, so every Hub was
+    checked as skin 97 (the Creemore Hub, skin 106, has its own firmware image).
+    """
+    text = str(value if value is not None else "").strip()
+    try:
+        return int(text, 16) if text.lower().startswith("0x") else int(text, 10)
+    except ValueError:
+        return None
+
+
+def latest_firmware_for_skin(skin: int, default_skin: int, query) -> tuple[int, dict | None]:
+    """Latest official firmware for the Hub's skin, else for the default Hub skin.
+
+    Returns the skin the answer is for and the answer (None when neither has one). The flash step
+    still refuses a bundle whose skin list does not include the Hub's skin.
+    """
+    res = query(skin, silent_on_empty=skin != default_skin)
+    if (res and res.get("Id")) or skin == default_skin:
+        return skin, res
+    print(f"[*] No firmware listed for skin {skin}, checking skin {default_skin}...")
+    return default_skin, query(default_skin)
+
+
 def private_key_path(pub_path: pathlib.Path) -> pathlib.Path:
     """The private key that belongs to a public key file: the same name without ".pub", as
     ssh-keygen names them. (with_suffix("") is wrong for names such as "id.backup.pub" or
@@ -125,7 +150,16 @@ def private_key_path(pub_path: pathlib.Path) -> pathlib.Path:
     raise ValueError(f"{pub_path} does not end in .pub: pass the public key that sits next to its private key")
 
 
-def resolve_ssh_key(pubkey_path: str | None = None) -> tuple[pathlib.Path, str]:
+def _ed25519_only(pub: pathlib.Path) -> str:
+    """The key line of pub; the Hub's SSH server takes Ed25519 user keys only."""
+    text = pub.read_text(encoding="utf-8").strip()
+    if not text.startswith("ssh-ed25519 "):
+        raise ValueError(f"{pub} is a {text.split(' ', 1)[0] or 'unknown'} key: the Hub's SSH server takes "
+                         "Ed25519 keys only (ssh-keygen -t ed25519)")
+    return text
+
+
+def resolve_ssh_key(pubkey_path: str | None = None, authorize: bool = True) -> tuple[pathlib.Path, str]:
     """Find existing harmony_owner key or generate a new ED25519 keypair."""
     ssh_dir = pathlib.Path.home() / ".ssh"
     ssh_dir.mkdir(parents=True, exist_ok=True)
@@ -134,7 +168,7 @@ def resolve_ssh_key(pubkey_path: str | None = None) -> tuple[pathlib.Path, str]:
         p = pathlib.Path(pubkey_path)
         if not p.is_file():
             raise FileNotFoundError(f"Specified pubkey not found: {pubkey_path}")
-        return p, p.read_text(encoding="utf-8").strip()
+        return p, _ed25519_only(p) if authorize else p.read_text(encoding="utf-8").strip()
 
     # Look for existing harmony_owner keys
     existing_keys = sorted(
@@ -142,10 +176,14 @@ def resolve_ssh_key(pubkey_path: str | None = None) -> tuple[pathlib.Path, str]:
         key=lambda k: k.stat().st_mtime,
         reverse=True,
     )
+    # the newest Ed25519 one, also without authorize (restore_stock.py --skip-usb-root logs in to a
+    # Hub whose server takes Ed25519 keys only): an RSA key next to it must not be picked
+    ed = [k for k in existing_keys if k.read_text(encoding="utf-8").startswith("ssh-ed25519 ")]
+    existing_keys = ed or existing_keys
     if existing_keys:
         chosen = existing_keys[0]
         print(f"[*] Using existing SSH key: {chosen}")
-        return chosen, chosen.read_text(encoding="utf-8").strip()
+        return chosen, _ed25519_only(chosen) if authorize else chosen.read_text(encoding="utf-8").strip()
 
     # Generate new ED25519 key
     new_priv = ssh_dir / "harmony_owner_ed25519"
@@ -332,7 +370,7 @@ def backup_stock_partitions(hub_ip: str, priv_key_path: pathlib.Path) -> pathlib
                     ["ssh"] + ssh_opts + [target, "cat > /tmp/busybox && chmod 755 /tmp/busybox"],
                     input=f_in.read(),
                     check=True,
-                    timeout=30,
+                    timeout=120,
                 )
             bb_bin = "/tmp/busybox"
             uploaded_temp_bb = True
@@ -413,16 +451,22 @@ def main() -> None:
     print("[*] Searching for Harmony Hub over USB HID (046D:C129 / 046D:C132)...")
     hid = None
     connected_pid = None
+    tried = []
     for pid in ALL_HUB_PIDS:
         candidate = HarmonyHid(pid=pid)
         if candidate.open():
             hid = candidate
             connected_pid = pid
             break
+        tried.append(candidate)
 
     if not hid or not connected_pid:
-        print("[-] Error: Harmony Hub not detected on USB.")
-        print("    Ensure the Hub is connected via micro-USB and powered ON.")
+        failure = usb_open_failure_message(tried)
+        if failure:
+            print("[-] Error: " + failure.replace("\n", "\n    "))
+        else:
+            print("[-] Error: Harmony Hub not detected on USB.")
+            print("    Ensure the Hub is connected via micro-USB and powered ON.")
         sys.exit(1)
 
     dev_label = "Harmony Pro Hub (2400)" if connected_pid == HUB_PRO_PID else "Harmony Hub"
@@ -433,12 +477,9 @@ def main() -> None:
         if not args.skip_fw_check:
             sysinfo = hid.get_sysinfo()
             current_fw = sysinfo.get("fw_ver") or sysinfo.get("version") or sysinfo.get("fw_version")
-            target_skin = 115 if connected_pid == HUB_PRO_PID else 97  # SUS skin IDs: Hub Pro / Hub
-            if sysinfo.get("skin"):
-                try:
-                    target_skin = int(sysinfo["skin"])
-                except ValueError:
-                    pass
+            default_skin = 115 if connected_pid == HUB_PRO_PID else 97  # SUS skin IDs: Hub Pro / Hub
+            reported_skin = parse_skin_id(sysinfo.get("skin"))
+            target_skin = reported_skin if reported_skin is not None else default_skin
             if current_fw:
                 print(f"[*] Hub reports firmware version: {current_fw} (Skin {target_skin})")
                 try:
@@ -448,7 +489,7 @@ def main() -> None:
                         parse_hfw2_bundle,
                         flash_firmware,
                     )
-                    res = query_latest_firmware(target_skin)
+                    target_skin, res = latest_firmware_for_skin(target_skin, default_skin, query_latest_firmware)
                     if res and res.get("Id"):
                         latest_fw = res["Id"]
                         if current_fw != latest_fw:
@@ -575,7 +616,11 @@ def main() -> None:
             return
 
         # 4. Resolve SSH Public Key & Build Self-Extracting Payload
-        pub_path, pub_str = resolve_ssh_key(args.pubkey)
+        try:
+            pub_path, pub_str = resolve_ssh_key(args.pubkey)
+        except (OSError, ValueError) as e:
+            print(f"[-] SSH key: {e}")
+            sys.exit(1)
         print(f"[+] Authorized public key: {pub_str.split()[0]} {pub_str.split()[-1]}")
 
         print(f"[*] Building self-extracting Dropbear payload (MIPS 24Kc)...")

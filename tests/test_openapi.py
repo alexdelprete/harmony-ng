@@ -351,7 +351,9 @@ class TestOpenApiCompliance(unittest.TestCase):
             "/api/remote-unpair",
             "/api/update-status",
             "/api/update-check",
-            "/api/custom-icons"
+            "/api/custom-icons",
+            "/api/plugins",
+            "/api/plugins/install"
         ]
         for ep in required_endpoints:
             self.assertIn(ep, paths, f"Critical endpoint {ep} must be defined in docs/openapi.yaml")
@@ -512,7 +514,7 @@ class TestOpenApiCompliance(unittest.TestCase):
             if rf_j.get("running") is False:
                 # hub_rf not running: hub_daemon's own reply, slot numbers only
                 self.assertEqual(rf_j.get("state"), "stopped")
-                self.assertEqual([s.get("slot") for s in slots], [1, 2])
+                self.assertEqual([s.get("slot") for s in slots], [1, 2, 3, 4, 5, 6])
             elif len(slots) > 0:
                 s1 = slots[0]
                 self.assertIn("slot", s1)

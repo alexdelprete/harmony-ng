@@ -53,6 +53,9 @@ import {
 } from './app_icons_ui.js';
 import { HarmonyAppRemotesScreen } from './app_remotes_screen.js';
 
+/* Remote slots of the Hub (payload/source/remote_slots.h) */
+const RF_SLOT_MAX = 6;
+
 export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
   /* pushed: an rf_status object from the WebSocket (state watcher); fetched when absent */
   async refreshRfStatus(pushed = null) {
@@ -78,161 +81,10 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
           badge.textContent = isOnline ? t('badge_online') : t('badge_offline');
         }
 
-        // Slot 1
-        const s1 = (st.slots && st.slots.find(s => s.slot === 1)) || { active: st.paired, address: null, rf_address: null };
-        const s1Addr = (s1 && (s1.address || s1.rf_address)) || '';
-        const s1Active = Boolean((s1.active || st.paired) && s1Addr && s1Addr !== 'None' && s1Addr !== '00000000');
-        const isNonLinux1 = s1Active && (
-          s1.model === 'smart_control' ||
-          s1.model === 'companion' ||
-          s1.has_screen === false ||
-          s1.sw_version === 'N/A' ||
-          !s1.sw_version ||
-          s1.sw_version === 'unknown' ||
-          (s1.name && (s1.name.includes('Companion') || s1.name.includes('Smart')))
-        );
-        const isSmart1 = s1.model === 'smart_control' || (s1.name && s1.name.includes('Smart'));
-        const b1 = document.getElementById('rfSlot1Badge');
-        const t1 = document.getElementById('rfSlot1Title');
-        const a1 = document.getElementById('rfSlot1Addr');
-        const batt1 = document.getElementById('rfSlot1Battery');
-        const battRow1 = document.getElementById('rfSlot1BattRow');
-        const fwRow1 = document.getElementById('rfSlot1FwRow');
-        const ver1 = document.getElementById('rfSlot1Ver');
-        const cfgVer1 = document.getElementById('rfSlot1CfgVer');
-        const otaWrap1 = document.getElementById('rfSlot1UpdateWrap');
-        const p1Btn = document.getElementById('rfPairSlot1Btn');
-        const u1Btn = document.getElementById('rfUnpairSlot1Btn');
-        const pull1 = document.getElementById('rfPullSlot1Btn');
-        const cfgBtn1 = document.getElementById('rfConfigSlot1Btn');
-        const refBtn1 = document.getElementById('rfRefreshSlot1Btn');
-
-        if (t1) {
-          if (!s1Active) {
-            t1.textContent = t('slot_1_remote_1');
-          } else if (isSmart1) {
-            t1.textContent = tf('rf_slot_product_title', { slot: 1, product: 'Harmony Smart Control' });
-          } else if (isNonLinux1) {
-            t1.textContent = tf('rf_slot_product_title', { slot: 1, product: 'Harmony Companion' });
-          } else {
-            t1.textContent = tf('rf_slot_product_title', { slot: 1, product: 'Harmony Remote' });
-          }
-        }
-        if (b1) {
-          b1.className = `badge ${s1Active ? (isNonLinux1 ? 'info' : 'ok') : 'subtle'}`;
-          b1.textContent = s1Active ? (isSmart1 ? 'SMART CONTROL' : (isNonLinux1 ? 'COMPANION' : t('badge_paired'))) : t('badge_empty');
-        }
-        if (a1) a1.textContent = s1Active ? s1Addr : t('val_none');
-        if (battRow1) battRow1.style.display = isNonLinux1 ? 'none' : 'block';
-        if (fwRow1) fwRow1.style.display = isNonLinux1 ? 'none' : 'block';
-        if (batt1 && !isNonLinux1) {
-          if (s1.battery && typeof s1.battery.percent === 'number' && s1.battery.percent > 0) {
-            const chg = s1.battery.charging ? ` ⚡${t('battery_charging_suffix')}` : '';
-            batt1.textContent = `${s1.battery.percent}% (${s1.battery.voltage_mv} mV)${chg}`;
-          } else {
-            batt1.textContent = s1Active ? t('waiting_for_report') : '--';
-          }
-        }
-        if (ver1 && !isNonLinux1) ver1.textContent = s1.sw_version || t('unknown');
-        if (cfgVer1 && !isNonLinux1) {
-          if (!s1Active) {
-            cfgVer1.textContent = '--';
-          } else {
-            const cVer = s1.config_version ? `v${s1.config_version}` : 'v0';
-            const inSync = s1.in_sync !== false;
-            const bCls = inSync ? 'ok' : 'warn';
-            const bTxt = escapeHtml(inSync ? t('badge_in_sync') : tf('badge_out_of_sync', { version: st.hub_config_version || 0 }));
-            cfgVer1.innerHTML = `${cVer} <span class="badge ${bCls} mini" style="font-size:10px;padding:1px 5px;margin-left:4px;">${bTxt}</span>`;
-          }
-        }
-        if (p1Btn) p1Btn.style.display = s1Active ? 'none' : 'inline-block';
-        if (u1Btn) u1Btn.style.display = s1Active ? 'inline-block' : 'none';
-        if (pull1) pull1.style.display = (s1Active && !isNonLinux1) ? 'inline-block' : 'none';
-        if (cfgBtn1) cfgBtn1.style.display = (s1Active && !isNonLinux1) ? 'inline-block' : 'none';
-        if (refBtn1) refBtn1.style.display = (s1Active && !isNonLinux1) ? 'inline-block' : 'none';
-        if (otaWrap1) {
-          const latestRemote = this.latestRemoteVersion || '1.3.0';
-          const needsOta = !isNonLinux1 && s1Active && s1.sw_version && s1.sw_version !== 'unknown' && this.isVersionOlder(s1.sw_version, latestRemote);
-          otaWrap1.style.display = needsOta ? 'block' : 'none';
-        }
-
-        // Slot 2
-        const s2 = (st.slots && st.slots.find(s => s.slot === 2)) || { active: false, address: null, rf_address: null };
-        const s2Addr = (s2 && (s2.address || s2.rf_address)) || '';
-        const s2Active = Boolean(s2.active && s2Addr && s2Addr !== 'None' && s2Addr !== '00000000');
-        const isNonLinux2 = s2Active && (
-          s2.model === 'smart_control' ||
-          s2.model === 'companion' ||
-          s2.has_screen === false ||
-          s2.sw_version === 'N/A' ||
-          !s2.sw_version ||
-          s2.sw_version === 'unknown' ||
-          (s2.name && (s2.name.includes('Companion') || s2.name.includes('Smart')))
-        );
-        const isSmart2 = s2.model === 'smart_control' || (s2.name && s2.name.includes('Smart'));
-        const b2 = document.getElementById('rfSlot2Badge');
-        const t2 = document.getElementById('rfSlot2Title');
-        const a2 = document.getElementById('rfSlot2Addr');
-        const batt2 = document.getElementById('rfSlot2Battery');
-        const battRow2 = document.getElementById('rfSlot2BattRow');
-        const fwRow2 = document.getElementById('rfSlot2FwRow');
-        const ver2 = document.getElementById('rfSlot2Ver');
-        const cfgVer2 = document.getElementById('rfSlot2CfgVer');
-        const otaWrap2 = document.getElementById('rfSlot2UpdateWrap');
-        const p2Btn = document.getElementById('rfPairSlot2Btn');
-        const u2Btn = document.getElementById('rfUnpairSlot2Btn');
-        const pull2 = document.getElementById('rfPullSlot2Btn');
-        const cfgBtn2 = document.getElementById('rfConfigSlot2Btn');
-        const refBtn2 = document.getElementById('rfRefreshSlot2Btn');
-
-        if (t2) {
-          if (!s2Active) {
-            t2.textContent = t('slot_2_remote_2');
-          } else if (isSmart2) {
-            t2.textContent = tf('rf_slot_product_title', { slot: 2, product: 'Harmony Smart Control' });
-          } else if (isNonLinux2) {
-            t2.textContent = tf('rf_slot_product_title', { slot: 2, product: 'Harmony Companion' });
-          } else {
-            t2.textContent = tf('rf_slot_product_title', { slot: 2, product: 'Harmony Remote' });
-          }
-        }
-        if (b2) {
-          b2.className = `badge ${s2Active ? (isNonLinux2 ? 'info' : 'ok') : 'subtle'}`;
-          b2.textContent = s2Active ? (isSmart2 ? 'SMART CONTROL' : (isNonLinux2 ? 'COMPANION' : t('badge_paired'))) : t('badge_empty');
-        }
-        if (a2) a2.textContent = s2Active ? s2Addr : t('val_none');
-        if (battRow2) battRow2.style.display = isNonLinux2 ? 'none' : 'block';
-        if (fwRow2) fwRow2.style.display = isNonLinux2 ? 'none' : 'block';
-        if (batt2 && !isNonLinux2) {
-          if (s2.battery && typeof s2.battery.percent === 'number' && s2.battery.percent > 0) {
-            const chg = s2.battery.charging ? ` ⚡${t('battery_charging_suffix')}` : '';
-            batt2.textContent = `${s2.battery.percent}% (${s2.battery.voltage_mv} mV)${chg}`;
-          } else {
-            batt2.textContent = s2Active ? t('waiting_for_report') : '--';
-          }
-        }
-        if (ver2 && !isNonLinux2) ver2.textContent = s2.sw_version || t('unknown');
-        if (cfgVer2 && !isNonLinux2) {
-          if (!s2Active) {
-            cfgVer2.textContent = '--';
-          } else {
-            const cVer = s2.config_version ? `v${s2.config_version}` : 'v0';
-            const inSync = s2.in_sync !== false;
-            const bCls = inSync ? 'ok' : 'warn';
-            const bTxt = escapeHtml(inSync ? t('badge_in_sync') : tf('badge_out_of_sync', { version: st.hub_config_version || 0 }));
-            cfgVer2.innerHTML = `${cVer} <span class="badge ${bCls} mini" style="font-size:10px;padding:1px 5px;margin-left:4px;">${bTxt}</span>`;
-          }
-        }
-        if (p2Btn) p2Btn.style.display = s2Active ? 'none' : 'inline-block';
-        if (u2Btn) u2Btn.style.display = s2Active ? 'inline-block' : 'none';
-        if (pull2) pull2.style.display = (s2Active && !isNonLinux2) ? 'inline-block' : 'none';
-        if (cfgBtn2) cfgBtn2.style.display = (s2Active && !isNonLinux2) ? 'inline-block' : 'none';
-        if (refBtn2) refBtn2.style.display = (s2Active && !isNonLinux2) ? 'inline-block' : 'none';
-        if (otaWrap2) {
-          const latestRemote = this.latestRemoteVersion || '1.3.0';
-          const needsOta = !isNonLinux2 && s2Active && s2.sw_version && s2.sw_version !== 'unknown' && this.isVersionOlder(s2.sw_version, latestRemote);
-          otaWrap2.style.display = needsOta ? 'block' : 'none';
-        }
+        // A card per slot, each made from the same template: its Pair button pairs the next
+        // remote into that slot
+        this.syncRfSlotCards();
+        for (let n = 1; n <= RF_SLOT_MAX; n++) this.renderRfSlotCard(st, n);
 
         if (pBtn) pBtn.style.display = st.pairing_active ? 'none' : 'inline-block';
         if (sBtn) sBtn.style.display = st.pairing_active ? 'inline-block' : 'none';
@@ -270,11 +122,10 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
         }
 
         // Lock / unlock conflicting buttons during OTA
-        const conflictingBtnIds = [
-          'rfPairSlot1Btn', 'rfPairSlot2Btn', 'rfUnpairSlot1Btn', 'rfUnpairSlot2Btn',
-          'rfUnpairBtn', 'rfConfigSlot1Btn', 'rfConfigSlot2Btn', 'rfPullSlot1Btn',
-          'rfPullSlot2Btn', 'btnPushConfigToRemote'
-        ];
+        const conflictingBtnIds = ['rfUnpairBtn', 'btnPushConfigToRemote'];
+        for (let n = 1; n <= RF_SLOT_MAX; n++) {
+          conflictingBtnIds.push(`rfPairSlot${n}Btn`, `rfUnpairSlot${n}Btn`, `rfConfigSlot${n}Btn`, `rfPullSlot${n}Btn`);
+        }
         conflictingBtnIds.forEach(id => {
           const b = document.getElementById(id);
           if (b) {
@@ -284,17 +135,12 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
           }
         });
 
-        const ota1Btn = document.getElementById('rfSlot1UpdateBtn');
-        const ota2Btn = document.getElementById('rfSlot2UpdateBtn');
-        if (ota1Btn) {
-          ota1Btn.disabled = isOtaBusy;
-          if (isOtaBusy && st.ota?.slot !== 1) ota1Btn.title = tf('locked_ota_in_progress_slot', { slot: st.ota?.slot });
-          else ota1Btn.removeAttribute('title');
-        }
-        if (ota2Btn) {
-          ota2Btn.disabled = isOtaBusy;
-          if (isOtaBusy && st.ota?.slot !== 2) ota2Btn.title = tf('locked_ota_in_progress_slot', { slot: st.ota?.slot });
-          else ota2Btn.removeAttribute('title');
+        for (let n = 1; n <= RF_SLOT_MAX; n++) {
+          const otaBtn = document.getElementById(`rfSlot${n}UpdateBtn`);
+          if (!otaBtn) continue;
+          otaBtn.disabled = isOtaBusy;
+          if (isOtaBusy && st.ota?.slot !== n) otaBtn.title = tf('locked_ota_in_progress_slot', { slot: st.ota?.slot });
+          else otaBtn.removeAttribute('title');
         }
       }
     } catch {
@@ -303,6 +149,115 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
         badge.className = 'badge bad';
         badge.textContent = t('badge_offline');
       }
+    }
+  }
+
+  /* The card of slot n: what the RF status says about that slot */
+  renderRfSlotCard(st, n) {
+      const s = (st.slots && st.slots.find(s => s.slot === n)) || { active: false, address: null, rf_address: null };
+      const addr = (s && (s.address || s.rf_address)) || '';
+      const active = Boolean(s.active && addr && addr !== 'None' && addr !== '00000000');
+      const isNonLinux = active && (
+        s.model === 'smart_control' ||
+        s.model === 'companion' ||
+        s.has_screen === false ||
+        s.sw_version === 'N/A' ||
+        !s.sw_version ||
+        s.sw_version === 'unknown' ||
+        (s.name && (s.name.includes('Companion') || s.name.includes('Smart')))
+      );
+      const isSmart = s.model === 'smart_control' || (s.name && s.name.includes('Smart'));
+      const badgeEl = document.getElementById(`rfSlot${n}Badge`);
+      const titleEl = document.getElementById(`rfSlot${n}Title`);
+      const addrEl = document.getElementById(`rfSlot${n}Addr`);
+      const battEl = document.getElementById(`rfSlot${n}Battery`);
+      const battRow = document.getElementById(`rfSlot${n}BattRow`);
+      const fwRow = document.getElementById(`rfSlot${n}FwRow`);
+      const verEl = document.getElementById(`rfSlot${n}Ver`);
+      const cfgVerEl = document.getElementById(`rfSlot${n}CfgVer`);
+      const otaWrap = document.getElementById(`rfSlot${n}UpdateWrap`);
+      const pairBtn = document.getElementById(`rfPairSlot${n}Btn`);
+      const unpairBtn = document.getElementById(`rfUnpairSlot${n}Btn`);
+      const pullBtn = document.getElementById(`rfPullSlot${n}Btn`);
+      const cfgBtn = document.getElementById(`rfConfigSlot${n}Btn`);
+      const refBtn = document.getElementById(`rfRefreshSlot${n}Btn`);
+
+      if (titleEl) {
+        if (!active) {
+          titleEl.textContent = tf('slot_n', { slot: n });
+        } else if (isSmart) {
+          titleEl.textContent = tf('rf_slot_product_title', { slot: n, product: 'Harmony Smart Control' });
+        } else if (isNonLinux) {
+          titleEl.textContent = tf('rf_slot_product_title', { slot: n, product: 'Harmony Companion' });
+        } else {
+          titleEl.textContent = tf('rf_slot_product_title', { slot: n, product: 'Harmony Remote' });
+        }
+      }
+      if (badgeEl) {
+        badgeEl.className = `badge ${active ? (isNonLinux ? 'info' : 'ok') : 'subtle'}`;
+        badgeEl.textContent = active ? (isSmart ? 'SMART CONTROL' : (isNonLinux ? 'COMPANION' : t('badge_paired'))) : t('badge_empty');
+      }
+      if (addrEl) addrEl.textContent = active ? addr : t('val_none');
+      if (battRow) battRow.style.display = isNonLinux ? 'none' : 'block';
+      if (fwRow) fwRow.style.display = isNonLinux ? 'none' : 'block';
+      if (battEl && !isNonLinux) {
+        if (s.battery && typeof s.battery.percent === 'number' && s.battery.percent > 0) {
+          const chg = s.battery.charging ? ` ⚡${t('battery_charging_suffix')}` : '';
+          battEl.textContent = `${s.battery.percent}% (${s.battery.voltage_mv} mV)${chg}`;
+        } else {
+          battEl.textContent = active ? t('waiting_for_report') : '--';
+        }
+      }
+      if (verEl && !isNonLinux) verEl.textContent = s.sw_version || t('unknown');
+      if (cfgVerEl && !isNonLinux) {
+        if (!active) {
+          cfgVerEl.textContent = '--';
+        } else {
+          const cVer = s.config_version ? `v${s.config_version}` : 'v0';
+          const inSync = s.in_sync !== false;
+          const bCls = inSync ? 'ok' : 'warn';
+          const bTxt = escapeHtml(inSync ? t('badge_in_sync') : tf('badge_out_of_sync', { version: st.hub_config_version || 0 }));
+          cfgVerEl.innerHTML = `${cVer} <span class="badge ${bCls} mini" style="font-size:10px;padding:1px 5px;margin-left:4px;">${bTxt}</span>`;
+        }
+      }
+      if (pairBtn) pairBtn.style.display = active ? 'none' : 'inline-block';
+      if (unpairBtn) unpairBtn.style.display = active ? 'inline-block' : 'none';
+      if (pullBtn) pullBtn.style.display = (active && !isNonLinux) ? 'inline-block' : 'none';
+      if (cfgBtn) cfgBtn.style.display = (active && !isNonLinux) ? 'inline-block' : 'none';
+      if (refBtn) refBtn.style.display = (active && !isNonLinux) ? 'inline-block' : 'none';
+      if (otaWrap) {
+        const latestRemote = this.latestRemoteVersion || '1.3.0';
+        const needsOta = !isNonLinux && active && s.sw_version && s.sw_version !== 'unknown' && this.isVersionOlder(s.sw_version, latestRemote);
+        otaWrap.style.display = needsOta ? 'block' : 'none';
+      }
+  }
+
+  /* The cards of slots 1 to RF_SLOT_MAX, all made from #rfSlotCardTpl: every slot has one,
+   * paired or not */
+  syncRfSlotCards() {
+    const grid = document.getElementById('rfSlotsGrid');
+    const tpl = document.getElementById('rfSlotCardTpl');
+    if (!grid || !tpl) return;
+    for (let n = 1; n <= RF_SLOT_MAX; n++) {
+      if (document.getElementById(`rfSlotCard${n}`)) continue;
+      const c = tpl.content.firstElementChild.cloneNode(true);
+      c.id = `rfSlotCard${n}`;
+      c.querySelectorAll('[id]').forEach(el => { el.id = el.id.replace('SlotN', `Slot${n}`); });
+      // template content is not in the document when the page is translated
+      c.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.getAttribute('data-i18n')); });
+      const title = c.querySelector(`#rfSlot${n}Title`);
+      if (title) title.textContent = tf('slot_n', { slot: n });
+      const pair = c.querySelector(`#rfPairSlot${n}Btn`);
+      const unpair = c.querySelector(`#rfUnpairSlot${n}Btn`);
+      if (pair) pair.textContent = tf('pair_slot_n', { slot: n });
+      if (unpair) unpair.textContent = tf('unpair_slot_n', { slot: n });
+      pair?.addEventListener('click', () => this.pairRfRemote(n));
+      unpair?.addEventListener('click', () => this.unpairRfSlot(n));
+      c.querySelector(`#rfConfigSlot${n}Btn`)?.addEventListener('click', () => this.openRfConfigModal(n));
+      c.querySelector(`#rfRefreshSlot${n}Btn`)?.addEventListener('click', () => this.refreshRfStatus());
+      c.querySelector(`#rfPullSlot${n}Btn`)?.addEventListener('click', () => this.pullConfigFromRemote(n));
+      c.querySelector(`#rfSlot${n}UpdateBtn`)?.addEventListener('click', () => this.startRemoteOta(n));
+      grid.appendChild(c);
     }
   }
 
@@ -369,9 +324,6 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
       const gyroVal = typeof cfg.gyro !== 'undefined' ? cfg.gyro : (typeof cfg.gyroEnabled !== 'undefined' ? (cfg.gyroEnabled ? 1 : 0) : 1);
       if (document.getElementById('rfCfgGyro')) document.getElementById('rfCfgGyro').value = String(gyroVal ? 1 : 0);
 
-      const gyroRate = cfg.gyro_rate || cfg.gyroRate || 50;
-      if (document.getElementById('rfCfgGyroRate')) document.getElementById('rfCfgGyroRate').value = String(gyroRate);
-
       const btnBacklight = typeof cfg.btn_backlight !== 'undefined' ? cfg.btn_backlight : (typeof cfg.btnBacklight !== 'undefined' ? cfg.btnBacklight : 2);
       if (document.getElementById('rfCfgBtnBacklight')) document.getElementById('rfCfgBtnBacklight').value = String(btnBacklight);
 
@@ -416,7 +368,6 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
     const nav_mode = parseInt(document.getElementById('rfCfgNavMode')?.value || '1', 10);
     const confirm_act = parseInt(document.getElementById('rfCfgConfirmAct')?.value || '1', 10);
     const gyro = parseInt(document.getElementById('rfCfgGyro')?.value || '1', 10);
-    const gyro_rate = parseInt(document.getElementById('rfCfgGyroRate')?.value || '50', 10);
     const btn_backlight = parseInt(document.getElementById('rfCfgBtnBacklight')?.value || '2', 10);
     const night_start = parseInt(document.getElementById('rfCfgNightStart')?.value || '22', 10);
     const night_end = parseInt(document.getElementById('rfCfgNightEnd')?.value || '7', 10);
@@ -463,8 +414,6 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
       confirmActivity: confirm_act === 1,
       gyro: gyro,
       gyroEnabled: gyro === 1,
-      gyro_rate: gyro_rate,
-      gyroRate: gyro_rate,
       btn_backlight: btn_backlight,
       btnBacklight: btn_backlight,
       night_start: night_start,
@@ -514,7 +463,7 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
   }
 
   async pullConfigFromRemote(slot) {
-    const slotName = tf('slot_n', { slot: slot === 1 ? 1 : 2 });
+    const slotName = tf('slot_n', { slot });
     if (!await showConfirm(tf('pull_config_confirm', { slot: slotName }), { title: tf('pull_config_slot_title', { slot: slotName }), okText: t('pull_config', 'Pull Config'), danger: false })) return;
     try {
       await this.client.pullRfConfig(slot);
@@ -544,7 +493,7 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
   }
 
   async unpairRfSlot(slot) {
-    const slotName = tf('slot_n', { slot: slot === 1 ? 1 : 2 });
+    const slotName = tf('slot_n', { slot });
     const msg = tf('unpair_slot_confirm', { slot: slotName });
     if (!await showConfirm(msg, { title: tf('unpair_slot_title', { slot: slotName }), okText: tf('unpair_slot_title', { slot: slotName }) })) return;
     try {
@@ -589,10 +538,15 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
   async startRemoteOta(slot = 1) {
     if (!await showConfirm(tf('rf_ota_update_confirm', { slot: slot }), { title: t('rf_ota_title', 'RF OTA Update'), okText: t('btn_start_update', 'Start Update'), danger: false })) return;
     const btn = document.getElementById(`rfSlot${slot}UpdateBtn`);
-    const otherBtn = document.getElementById(`rfSlot${slot === 1 ? 2 : 1}UpdateBtn`);
+    /* the Update buttons of the other slots: one OTA at a time */
+    const otherBtns = [];
+    for (let n = 1; n <= RF_SLOT_MAX; n++) {
+      const b = n !== slot && document.getElementById(`rfSlot${n}UpdateBtn`);
+      if (b) otherBtns.push(b);
+    }
     const statusDiv = document.getElementById(`rfSlot${slot}OtaStatus`);
     if (btn) btn.disabled = true;
-    if (otherBtn) otherBtn.disabled = true;
+    otherBtns.forEach(b => { b.disabled = true; });
     if (statusDiv) {
       statusDiv.style.display = 'block';
       statusDiv.textContent = t('rf_ota_initiating');
@@ -615,19 +569,19 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
               clearInterval(pollTimer);
               if (statusDiv) statusDiv.textContent = `✓ ${t('rf_ota_complete')}`;
               if (btn) btn.disabled = false;
-              if (otherBtn) otherBtn.disabled = false;
+              otherBtns.forEach(b => { b.disabled = false; });
               setTimeout(() => this.refreshRfStatus(), 10000);
             } else if (st.status === -1) {
               clearInterval(pollTimer);
               if (statusDiv) statusDiv.textContent = `❌ ${tf('rf_ota_failed_error', { error: st.error || t('transfer_failed') })}`;
               if (btn) btn.disabled = false;
-              if (otherBtn) otherBtn.disabled = false;
+              otherBtns.forEach(b => { b.disabled = false; });
               this.refreshRfStatus().catch(() => { });
             } else if (st.status === 0 && !st.in_progress && startedTransmitting) {
               clearInterval(pollTimer);
               if (statusDiv) statusDiv.textContent = `❌ ${t('rf_ota_aborted')}`;
               if (btn) btn.disabled = false;
-              if (otherBtn) otherBtn.disabled = false;
+              otherBtns.forEach(b => { b.disabled = false; });
               this.refreshRfStatus().catch(() => { });
             }
           } catch { }
@@ -635,48 +589,42 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
       } else {
         alert(t("could_not_start_ota") + (res?.error || res?.status || t('unknown_error')));
         if (btn) btn.disabled = false;
-        if (otherBtn) otherBtn.disabled = false;
+        otherBtns.forEach(b => { b.disabled = false; });
       }
     } catch (e) {
       alert(t('could_not_start_ota', 'Failed to trigger RF OTA: ') + e.message);
       if (btn) btn.disabled = false;
-      if (otherBtn) otherBtn.disabled = false;
+      otherBtns.forEach(b => { b.disabled = false; });
     }
   }
 
-  async checkOnlineVersions() {
-    try {
-      let ver = '';
+  /* The Hub version update.sh would install, without "v", or '' when unknown: the ota branch
+   * VERSION first (its signed manifest is what gets installed), GitHub releases only when the
+   * branch cannot be read. */
+  async fetchOnlineHubVersion(token = '') {
+    const base = 'https://raw.githubusercontent.com/iranl/harmony-ng/ota';
+    for (const file of ['v2/VERSION', 'VERSION_V2']) {
       try {
-        const ghRes = await fetch('https://api.github.com/repos/iranl/harmony-ng/releases/latest', {
-          headers: { 'Accept': 'application/vnd.github.v3+json' },
-          cache: 'no-cache'
-        });
-        if (ghRes.ok) {
-          const ghData = await ghRes.json();
-          if (ghData.tag_name) ver = ghData.tag_name.replace(/^v/, '').trim();
-        }
+        const res = await fetch(`${base}/${file}?_=${Date.now()}`, { cache: 'no-cache' });
+        const ver = res.ok ? (await res.text()).trim().replace(/^v/, '') : '';
+        if (/^\d+(\.\d+)*$/.test(ver)) return ver;
       } catch (_) { }
+    }
+    try {
+      const headers = { 'Accept': 'application/vnd.github.v3+json' };
+      if (token) headers['Authorization'] = `token ${token}`;
+      const res = await fetch('https://api.github.com/repos/iranl/harmony-ng/releases/latest', { headers, cache: 'no-cache' });
+      if (res.ok) return String((await res.json()).tag_name || '').trim().replace(/^v/, '');
+    } catch (_) { }
+    return '';
+  }
 
-      if (!ver) {
-        let res = await fetch(`https://raw.githubusercontent.com/iranl/harmony-ng/ota/v2/VERSION?_=${Date.now()}`, { cache: 'no-cache' }).catch(() => null);
-        if (!res || !res.ok) {
-          res = await fetch(`https://raw.githubusercontent.com/iranl/harmony-ng/ota/VERSION_V2?_=${Date.now()}`, { cache: 'no-cache' }).catch(() => null);
-        }
-        if (!res || !res.ok) {
-          res = await fetch(`https://raw.githubusercontent.com/iranl/harmony-ng/main/VERSION?_=${Date.now()}`, { cache: 'no-cache' }).catch(() => null);
-        }
-        if (res && res.ok) {
-          const text = await res.text();
-          ver = text.replace(/^v/, '').trim();
-        }
-      }
-
-      if (ver) {
-        this.onlineVersion = ver;
-        this.latestRemoteVersion = ver;
-      }
-    } catch { }
+  async checkOnlineVersions() {
+    const ver = await this.fetchOnlineHubVersion();
+    if (ver) {
+      this.onlineVersion = ver;
+      this.latestRemoteVersion = ver;
+    }
   }
 
   showUpdatingOverlay(statusText = t('applying_update_reboot')) {
@@ -697,9 +645,14 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
     try {
       // 0. Hub software update in progress
       const updateStat = await this.client.getUpdateStatus().catch(() => null);
+      // An update started before this page loaded (or in another tab): follow it to its end.
+      // No answer is no information (the Hub may be restarting): the overlay stays.
       if (updateStat?.updating) {
-        this.showUpdatingOverlay(t('hub_update_running_bg'));
-      } else if (this.isUpdating && !this.pollTimerActive) {
+        if (!this.pollTimerActive) {
+          this.showUpdatingOverlay(t('hub_update_running_bg'));
+          this.watchHubUpdate(updateStat.current_version || updateStat.version || '');
+        }
+      } else if (updateStat && this.isUpdating && !this.pollTimerActive) {
         this.hideUpdatingOverlay();
       }
 
@@ -731,8 +684,8 @@ export class HarmonyAppRemotesRf extends HarmonyAppRemotesScreen {
           const title = document.getElementById('remoteSyncTitle');
           const desc = document.getElementById('remoteSyncDesc');
           let slotLabel = t('all_paired_remotes');
-          if (rfStat.sync_pending_slot === 1) slotLabel = tf('remote_slot_n', { slot: 1 });
-          else if (rfStat.sync_pending_slot === 2) slotLabel = tf('remote_slot_n', { slot: 2 });
+          const ps = rfStat.sync_pending_slot;
+          if (Number.isInteger(ps) && ps >= 1 && ps <= RF_SLOT_MAX) slotLabel = tf('remote_slot_n', { slot: ps });
           if (title) title.textContent = tf('remote_settings_pending_push', { target: slotLabel });
           if (desc) {
             const diffInfo = rfStat.sync_pending_diff ? tf('pending_changes_list', { changes: rfStat.sync_pending_diff }) : t('hub_config_changed_push');

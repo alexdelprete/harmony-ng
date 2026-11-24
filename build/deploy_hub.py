@@ -17,6 +17,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 
@@ -47,7 +48,7 @@ def find_default_ssh_key() -> str | None:
         if owner_keys:
             return str(owner_keys[0])
 
-        for std in ("id_rsa", "id_ed25519"):
+        for std in ("id_ed25519",):  # the Hub server takes Ed25519 keys only
             cand = ssh_dir / std
             if cand.is_file():
                 return str(cand)
@@ -56,6 +57,9 @@ def find_default_ssh_key() -> str | None:
 
 
 ELF_MACHINE_MIPS = 8
+
+# The core binaries a deploy needs (a deploy without hub_rf left the Hub without its RF daemon)
+REQUIRED_HUB_BINARIES = ("hub_daemon", "hub_rf", "hub_btstack", "hub_util")
 
 
 def elf_machine(path: pathlib.Path) -> int | None:
@@ -87,8 +91,11 @@ def parse_space_reply(reply: str) -> tuple[int | None, int]:
     kernel, e.g. /tmp) has no usable figure, so its free space is unknown.
     """
     parts = reply.strip().split()
-    avail_kb = int(parts[0]) if parts and parts[0].isdigit() else None
-    total_kb = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+    if len(parts) < 3 or parts[0] == "unknown" or not parts[0].isdigit():
+        old_kb = int(parts[-1]) if parts and parts[-1].isdigit() else 0
+        return None, old_kb
+    avail_kb = int(parts[0])
+    total_kb = int(parts[1]) if parts[1].isdigit() else None
     old_kb = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
     if total_kb == 0:
         avail_kb = None
@@ -98,6 +105,30 @@ def parse_space_reply(reply: str) -> tuple[int | None, int]:
 # The Hub has no recovery access point any more. On a Hub deployed with an older release this
 # stops one still running (portal loop, DHCP server, hostapd, ath1) and removes its script, its
 # settings, its log and the hub_util links it used (hub_portal, hub_dhcpd).
+# The Hub's dropbearmulti takes Ed25519 user keys only: root's authorized_keys (dropbear reads
+# the one in root's home) must hold one before it is installed, or the next reboot locks root out
+# An Ed25519 key line in the shape dropbear reads: the key type at the very start, or after one
+# options field (names not checked) and one blank, then one space, the whole 68-character key blob,
+# a space or the end of the line. A line whose first word is another key type is skipped first.
+# The same patterns, the same decision: has_ed25519_user_key() in payload/scripts/update.sh (stock
+# BusyBox 1.13.4 grep).
+ED25519_KEY_SKIP = r"^[[:blank:]]*\(ssh-\|ecdsa-\|sk-\)[^[:blank:]]*[[:blank:]]ssh-ed25519 "
+ED25519_KEY_LINE = (r'^\([[:blank:]]*\([^[:blank:]"]\|"[^"]*"\)\{1,\}[[:blank:]]\)\{0,1\}'
+                    r"ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI[A-Za-z0-9+/]\{43\}\( \|$\)")
+ED25519_USER_KEY_CHECK = (
+    "h=$(awk -F: '$1==\"root\"{print $6}' /etc/passwd 2>/dev/null); f=\"${h:-/home/root}/.ssh/authorized_keys\"; "
+    "[ -f \"$f\" ] && grep -v '^[[:blank:]]*#' \"$f\" | grep -v '" + ED25519_KEY_SKIP + "' | "
+    "grep -q '" + ED25519_KEY_LINE + "' && echo yes || echo no"
+)
+
+# Run on the uploaded dropbearmulti ($s) before it replaces the old one: a build that cannot start
+# or whose scp crashes (seen with -mno-abicalls) would leave the Hub with a broken scp
+DROPBEAR_SELFTEST = (
+    'p=/tmp/.scp_probe.$$; echo x > "$p"; '
+    '"$s" dropbear -V >/dev/null 2>&1 && printf "\\0\\0\\0" | "$s" scp -f "$p" >/dev/null 2>&1; t=$?; rm -f "$p"; '
+    'if [ "$t" != 0 ]; then rm -f "$s"; echo selftest-failed; exit; fi; '
+)
+
 RECOVERY_AP_CLEANUP = (
     "if [ -f /var/run/hub-recovery-ap.pid ]; then "
     "_l=$(cat /var/run/hub-recovery-ap.pid 2>/dev/null); [ -n \"$_l\" ] && kill -9 \"$_l\" 2>/dev/null; "
@@ -123,6 +154,8 @@ class HubDeployer:
         dry_run: bool = False,
         no_backup: bool = False,
         stage_remote_ota: bool = False,
+        dev_btstack: bool = False,
+        clean_stock_resources: bool = False,
     ):
         self.hub_host = hub_host
         self.hub_user = hub_user
@@ -133,9 +166,12 @@ class HubDeployer:
         self.dry_run = dry_run
         self.no_backup = no_backup
         self.stage_remote_ota = stage_remote_ota
+        self.dev_btstack = dev_btstack
+        self.clean_stock_resources = clean_stock_resources
 
         self.deploy_failures: list[str] = []
         self.remote_hashes: dict[str, str] = {}
+        self.staged_ram_bb = False
         # Set once the Hub's services were stopped, cleared when the last step started them again
         self.services_stopped = False
 
@@ -143,6 +179,8 @@ class HubDeployer:
         self.script_dir = pathlib.Path(__file__).resolve().parent
         self.repo_root = self.script_dir.parent
         self.bundle_layout = (self.script_dir / "bin").is_dir()
+        # Dev BTstack build with info logs (build/build_btstack.sh), only in the repository layout
+        self.dev_btstack_bin = self.script_dir / "output" / "hub_btstack_dev"
 
         if self.bundle_layout:
             # Release bundle layout
@@ -193,13 +231,106 @@ class HubDeployer:
     def run_ssh(self, cmd_str: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(self.get_ssh_cmd(cmd_str), capture_output=True, text=True)
 
+    def ed25519_login_problem(self) -> str | None:
+        """Why the Ed25519-only server would lock this PC out, or None. root's authorized_keys must
+        hold an Ed25519 key, and this PC must log in with one (an Ed25519 line of another PC lets
+        the deploy in over RSA, and this PC out after the restart)."""
+        res = self.run_ssh(ED25519_USER_KEY_CHECK)
+        answer = res.stdout.strip()
+        if res.returncode != 0 or answer not in ("yes", "no"):
+            return f"the Hub's authorized_keys could not be checked ({res.stderr.strip() or 'no answer'})."
+        if answer == "no":
+            return ("root's authorized_keys on the Hub has no Ed25519 key line the new SSH server takes\n"
+                    "    (Ed25519 keys only: the next restart would lock you out). Add one, e.g.\n"
+                    "    ssh-keygen -t ed25519 -f ~/.ssh/harmony_owner_ed25519, append the .pub line to\n"
+                    "    /home/root/.ssh/authorized_keys on the Hub (docs/FIRST_INSTALL_HUB.md, \"Root's\n"
+                    "    Ed25519 key\"), then deploy again with --key ~/.ssh/harmony_owner_ed25519.")
+        cmd = self.get_ssh_cmd("true")
+        # A new connection: over a shared one (ControlMaster in ~/.ssh/config) opened by an earlier
+        # call with an RSA key, the test would pass without any Ed25519 login (#267)
+        cmd[1:1] = ["-o", "PubkeyAcceptedKeyTypes=ssh-ed25519", "-o", "ControlMaster=no", "-o", "ControlPath=none"]
+        try:
+            probe = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        except (OSError, subprocess.SubprocessError) as e:
+            return f"the Ed25519 login test did not run ({e})."
+        if probe.returncode != 0:
+            return ("this PC cannot log in to the Hub with an Ed25519 key (the Hub holds another PC's),\n"
+                    "    and the new SSH server takes Ed25519 keys only. Pass --key with this PC's Ed25519\n"
+                    "    key, or add its .pub line to /home/root/.ssh/authorized_keys, then deploy again.")
+        return None
+
+    def ensure_ed25519_host_key(self) -> None:
+        """The server loads only an Ed25519 host key. Create a missing one now (not at the first
+        login with -R) and record it next to the key this connection was checked against, so a
+        client that knows only the Hub's RSA key sees no changed key."""
+        res = self.run_ssh(
+            "k=/etc/dropbear/dropbear_ed25519_host_key; "
+            # an empty file: dropbearkey answers "File exists" and the server exits on it
+            "[ -f \"$k\" ] && [ ! -s \"$k\" ] && rm -f \"$k\"; "
+            "[ -s \"$k\" ] || /data/harmony/bin/dropbearmulti dropbearkey -t ed25519 -f \"$k\" >/dev/null 2>&1; "
+            "/data/harmony/bin/dropbearmulti dropbearkey -y -f \"$k\" 2>/dev/null | grep '^ssh-ed25519 '"
+        )
+        line = res.stdout.strip().splitlines()[0] if res.stdout.strip() else ""
+        if not line:
+            print("[!] Could not read the Hub's Ed25519 host key: the server creates it at the first login.")
+            return
+        try:
+            if ssh_hostkeys.record_host_key(self.hub_host, line):
+                print(f"[*] Recorded the Hub's Ed25519 host key in {ssh_hostkeys.known_hosts_file()}.")
+        except OSError as e:
+            print(f"[!] Could not record the Hub's Ed25519 host key: {e}")
+
+    def empty_stock_resources(self, imported_now: bool) -> None:
+        """--clean-stock-resources: the steps of tools/clean_stock_resources.py, over this deploy's SSH."""
+        # The files are the import's source: never in the run that imported them (its scp results
+        # are not checked), so the next run deletes them once the import is known to be there
+        if imported_now:
+            print("[!] The stock configuration was imported in this run: /data/resources NOT emptied. "
+                  "Check the devices and activities, then run again with --clean-stock-resources.")
+            return
+        tools_dir = (self.script_dir if self.bundle_layout else self.repo_root) / "tools"
+        if str(tools_dir) not in sys.path:
+            sys.path.insert(0, str(tools_dir))
+        try:
+            import clean_stock_resources as csr
+            files, total = csr.scan_stock_resources(self.run_ssh)
+            if not files:
+                print("[+] /data/resources is already empty.")
+                return
+            reason, _ = csr.refusal(self.run_ssh, csr.backup_hub.default_backup_dir())
+            if reason and reason.startswith(csr.NO_COPY) and self.dry_run and not self.no_backup:
+                # The dry run skipped the backup that saves them
+                print("    [dry-run] would empty /data/resources once the backup has saved the stock files "
+                      f"({len(files)} file(s), {total:,} bytes before compression)")
+                return
+        except (ImportError, RuntimeError, subprocess.SubprocessError) as e:
+            reason = str(e)
+        if reason:
+            print(f"[!] /data/resources NOT emptied: {reason}.")
+            self.deploy_failures.append("/data/resources (--clean-stock-resources)")
+            return
+        if self.dry_skip(f"empty /data/resources ({len(files)} file(s), {total:,} bytes before compression)"):
+            return
+        print(f"[*] Emptying /data/resources ({len(files)} file(s), {total:,} bytes before compression)...")
+        try:
+            err = csr.empty_stock_resources(self.run_ssh)
+        except (RuntimeError, subprocess.SubprocessError) as e:
+            err = str(e)
+        if err:
+            print(f"[!] Emptying /data/resources failed: {err}")
+            self.deploy_failures.append("/data/resources (--clean-stock-resources)")
+        else:
+            print("[+] /data/resources emptied.")
+
     def dry_skip(self, msg: str) -> bool:
         if self.dry_run:
             print(f"    [dry-run] would {msg}")
             return True
         return False
 
-    def deploy_file_if_changed(self, src: pathlib.Path, dst: str, perm: str = "755") -> bool:
+    def deploy_file_if_changed(self, src: pathlib.Path, dst: str, perm: str = "755", selftest: str = "") -> bool:
+        """Upload src to dst when the MD5 differs. selftest: shell run on the uploaded copy ($s) before
+        it replaces dst; it ends the install with "selftest-failed"."""
         if not src.is_file():
             return False
 
@@ -222,7 +353,8 @@ class HubDeployer:
         size_kb = (src.stat().st_size + 1023) // 1024
         space_check = (
             f"mkdir -p '{ddir}' 2>/dev/null; rm -f '{dst}.new' 2>/dev/null; "
-            f"a=$(df -k '{ddir}' 2>/dev/null | awk 'END {{print $(NF-2), $(NF-4)}}'); o=0; "
+            f"a=$( (/cache/bin/busybox df -k '{ddir}' 2>/dev/null || /tmp/busybox df -k '{ddir}' 2>/dev/null || df -k '{ddir}' 2>/dev/null) | "
+            f"awk 'END {{ if (NR > 0 && NF >= 3) print $(NF-2), $(NF-4) }}' ); o=0; "
             f"[ -f '{dst}' ] && o=$(ls -l '{dst}' 2>/dev/null | awk '{{print int(($5+1023)/1024)}}'); "
             f'echo "${{a:-unknown unknown}} ${{o:-0}}"'
         )
@@ -262,6 +394,7 @@ class HubDeployer:
             f"s='{stage}'; d='{dst}'; m=$(md5sum \"$s\" 2>/dev/null | cut -d' ' -f1); "
             f'if [ "$m" != "{local_md5}" ]; then rm -f "$s"; echo staged-mismatch; exit; fi; '
             f"chmod {perm} \"$s\" 2>/dev/null; "
+            f"{selftest}"
             f'if [ "$s" = "$d.new" ]; then mv -f "$s" "$d" && echo ok || echo move-failed; exit; fi; '
             f'rm -f "$d"; cp "$s" "$d" 2>/dev/null; m=$(md5sum "$d" 2>/dev/null | cut -d\' \' -f1); '
             f'if [ "$m" = "{local_md5}" ]; then chmod {perm} "$d" 2>/dev/null; rm -f "$s"; echo ok; else rm -f "$d"; echo copy-failed; fi'
@@ -272,6 +405,8 @@ class HubDeployer:
             return True
         elif status == "staged-mismatch":
             print(f"    [-] {fname}: uploaded copy MD5 mismatch; Hub keeps old copy.", file=sys.stderr)
+        elif status == "selftest-failed":
+            print(f"    [-] {fname}: the uploaded copy failed its self-test on the Hub; Hub keeps old copy.", file=sys.stderr)
         elif status == "copy-failed":
             print(f"    [-] {fname}: writing {dst} failed and old copy gone. Temp copy in {stage}.", file=sys.stderr)
         else:
@@ -294,6 +429,8 @@ class HubDeployer:
         try:
             return self._deploy()
         finally:
+            if self.staged_ram_bb and not self.dry_run:
+                self.run_ssh("rm -f /tmp/busybox 2>/dev/null || true")
             if self.services_stopped:
                 print("[!] Deployment ended early: starting the Hub services again...", file=sys.stderr)
                 self.run_ssh(self.RESTART_CMD)
@@ -328,6 +465,15 @@ class HubDeployer:
         print(f"Target Hub: {self.hub_host}")
         print(f"SSH key: {self.ssh_key or '(ssh defaults)'}")
         print("Mode: Extended BusyBox & Harmony Runtime")
+        if self.dev_btstack:
+            if not self.dev_btstack_bin.is_file() or elf_machine(self.dev_btstack_bin) != ELF_MACHINE_MIPS:
+                hint = ("a release bundle has no dev build: take hub_btstack_dev from the release's "
+                        "hub_btstack_dev_v<version>.tar.gz into output/" if self.bundle_layout
+                        else "Run build/compile_all.sh btstack first.")
+                print(f"[-] --dev-btstack: {self.dev_btstack_bin} is missing or not a MIPS binary. {hint}",
+                      file=sys.stderr)
+                return False
+            print(f"hub_btstack: dev build with info logs ({self.dev_btstack_bin})")
 
         # Connection check
         if self.dry_run:
@@ -344,11 +490,37 @@ class HubDeployer:
             print(f"[-] {self.hub_host} is not a Harmony Hub (uname -m: {machine or 'no answer'}). Nothing was changed. "
                   "For the remote use remote/deploy_remote.py.", file=sys.stderr)
             return False
+        # A deploy without one of them reported success and left the Hub without it
+        missing = [] if self.webui_only else [b for b in REQUIRED_HUB_BINARIES if not (self.bin_dir / b).is_file()]
+        if missing:
+            how = ("The release bundle is incomplete: download it again." if self.bundle_layout
+                   else "Build the Hub binaries with ./build/compile_all.sh first.")
+            print(f"[-] Hub binaries missing in {self.bin_dir}: {', '.join(missing)}. Nothing was changed. {how}",
+                  file=sys.stderr)
+            return False
         wrong = [] if self.webui_only else self.wrong_arch_binaries()
         if wrong:
             print(f"[-] Not built for the Hub (MIPS) in {self.bin_dir}: {', '.join(wrong)}. Nothing was changed.",
                   file=sys.stderr)
             return False
+
+        # If stock BusyBox lacks df, stage local BusyBox in RAM (/tmp)
+        # so free space checks and tools work before /cache/bin/busybox is deployed.
+        has_df = self.run_ssh("test -x /cache/bin/busybox && /cache/bin/busybox df -k / >/dev/null 2>&1 || type df >/dev/null 2>&1")
+        if has_df.returncode != 0 and not self.dry_run:
+            local_bb = self.bin_dir / "busybox"
+            if local_bb.is_file():
+                try:
+                    with open(local_bb, "rb") as f_in:
+                        stage_res = subprocess.run(
+                            self.get_ssh_cmd("cat > /tmp/busybox && chmod 755 /tmp/busybox"),
+                            stdin=f_in,
+                            capture_output=True,
+                        )
+                    if stage_res.returncode == 0:
+                        self.staged_ram_bb = True
+                except Exception as e:
+                    print(f"[!] Warning during RAM BusyBox staging: {e}", file=sys.stderr)
 
         if not self.webui_only:
             # 1. Run automated backup first
@@ -414,8 +586,18 @@ class HubDeployer:
                 "rm -rf /data/codex-backups /data/codexmqtt /data/harmony-backups /cache/crashlog-*.json 2>/dev/null; "
                 "rm -f /data/harmony/mqtt_config.json /data/harmony/elite_remote_map.json /data/harmony/bt_devices.json /data/devices.json /data/activities.json /data/harmony/devices.json /data/harmony/config/.imported /data/remote_ui.ota.gz /data/remote_ui.version 2>/dev/null || true; "
                 "rm -f /cache/codex_*.ota.gz /cache/codex_*.ota /cache/*.new /cache/*/*.new /data/harmony/*.new /data/harmony/*/*.new /data/rf_pair_test /data/test_hub_tx /data/codex_rf /data/hub_rf /data/harmony/bin/codex_* /cache/bin/codex_* /var/run/codex_* 2>/dev/null || true; "
-                "if [ -s /data/harmony/bin/dropbearmulti ] && [ -x /data/harmony/bin/dropbearmulti ]; then _harm_m=$(md5sum /data/harmony/bin/dropbearmulti 2>/dev/null | awk '{print $1}'); _data_m=$(md5sum /data/dropbearmulti 2>/dev/null | awk '{print $1}'); if [ -n \"$_harm_m\" ] && { [ \"$_harm_m\" = \"$_data_m\" ] || [ \"$_harm_m\" = \"3733327fd04bca282dbf06f33da0bf6c\" ]; }; then rm -f /data/dropbearmulti /usr/sbin/dropbearmulti 2>/dev/null || true; fi; for _a in dropbear dropbearkey dbclient scp; do [ -f /data/harmony/bin/$_a ] && [ ! -L /data/harmony/bin/$_a ] && rm -f /data/harmony/bin/$_a 2>/dev/null; ln -sf /data/harmony/bin/dropbearmulti /data/harmony/bin/$_a 2>/dev/null || true; done; for _a in dropbearkey dbclient scp; do ln -sf /data/harmony/bin/dropbearmulti /usr/sbin/$_a 2>/dev/null || true; done; fi; "
-                "mkdir -p /data/harmony/bin /data/harmony/www/assets /data/harmony/config /data/harmony/custom_icons"
+                "mkdir -p /data/harmony/bin /data/harmony/www/assets /data/harmony/config /data/harmony/custom_icons; "
+                "if [ -x /data/dropbearmulti ] && [ ! -s /data/harmony/bin/dropbearmulti ]; then cp -p /data/dropbearmulti /data/harmony/bin/dropbearmulti 2>/dev/null || true; fi; "
+                "_dbm=\"\"; [ -s /data/harmony/bin/dropbearmulti ] && [ -x /data/harmony/bin/dropbearmulti ] && _dbm=/data/harmony/bin/dropbearmulti; "
+                "[ -z \"$_dbm\" ] && [ -s /data/dropbearmulti ] && [ -x /data/dropbearmulti ] && _dbm=/data/dropbearmulti; "
+                "if [ -n \"$_dbm\" ]; then "
+                "  if [ \"$_dbm\" = \"/data/harmony/bin/dropbearmulti\" ]; then "
+                "    _harm_m=$(md5sum /data/harmony/bin/dropbearmulti 2>/dev/null | awk '{print $1}'); _data_m=$(md5sum /data/dropbearmulti 2>/dev/null | awk '{print $1}'); "
+                "    if [ -n \"$_harm_m\" ] && [ \"$_harm_m\" = \"$_data_m\" ]; then rm -f /data/dropbearmulti /usr/sbin/dropbearmulti 2>/dev/null || true; fi; "
+                "    for _a in dropbear dropbearkey scp; do [ -f /data/harmony/bin/$_a ] && [ ! -L /data/harmony/bin/$_a ] && rm -f /data/harmony/bin/$_a 2>/dev/null; ln -sf /data/harmony/bin/dropbearmulti /data/harmony/bin/$_a 2>/dev/null || true; done; "
+                "  fi; "
+                "  for _a in dropbearkey scp; do ln -sf \"$_dbm\" /usr/sbin/$_a 2>/dev/null || true; done; "
+                "fi"
             )
             if not self.dry_skip("move legacy /data/codex files to /data/harmony and remove obsolete files"):
                 self.run_ssh(mig_paths_cmd)
@@ -426,6 +608,7 @@ class HubDeployer:
             # Stock config conversion via migrate_hub_configs.py if needed
             has_dev_res = self.run_ssh("[ -f /data/harmony/config/devices.json ] && echo 1 || echo 0")
             has_dev = has_dev_res.stdout.strip() == "1"
+            imported_now = False
             if not has_dev:
                 has_stock_res = self.run_ssh("[ -f /data/resources/DeviceList.json ] && echo 1 || echo 0")
                 has_stock = has_stock_res.stdout.strip() == "1"
@@ -437,7 +620,11 @@ class HubDeployer:
 
                 if has_stock and not mig_script:
                     print("[!] Stock configuration found but migrate_hub_configs.py missing: configs NOT migrated.")
-                elif has_stock and mig_script and not self.dry_skip("migrate stock configuration and upload"):
+                elif has_stock and mig_script and self.dry_run:
+                    imported_now = True
+                    print("    [dry-run] would migrate stock configuration and upload")
+                elif has_stock and mig_script:
+                    imported_now = True
                     print("[*] Migrating stock Logitech configurations to canonical v2.0 format...")
                     with tempfile.TemporaryDirectory() as tmp_dir:
                         tmp_p = pathlib.Path(tmp_dir)
@@ -465,12 +652,52 @@ class HubDeployer:
             elif self.dry_run:
                 print("    [dry-run] /data/harmony/config/devices.json exists: stock config would not be imported")
 
+            if self.clean_stock_resources:
+                self.empty_stock_resources(imported_now)
+
             # Query remote hashes for core binaries and configs
             self.query_remote_hashes(
-                "/data/harmony/bin/* /data/harmony/* /data/harmony/config/* /cache/www/* "
+                "/data/harmony/bin/* /data/harmony/lib/* /data/harmony/* /data/harmony/config/* /cache/www/* "
                 "/cache/www/assets/* /cache/www/assets/themes/* /cache/modules/* /cache/bin/busybox "
                 "/cache/icons.tar.gz /etc/init.d/rcS.local"
             )
+
+            # Dropbear SSH server (deploy first so remote scp server is updated and verified)
+            dropbear_src = None
+            if (self.bin_dir / "dropbearmulti").is_file():
+                dropbear_src = self.bin_dir / "dropbearmulti"
+            elif (self.repo_root / "tools" / "bin" / "dropbearmulti_mips").is_file():
+                dropbear_src = self.repo_root / "tools" / "bin" / "dropbearmulti_mips"
+
+            key_problem = self.ed25519_login_problem() if dropbear_src else None
+            if key_problem:
+                print(f"[!] dropbearmulti NOT updated: {key_problem}")
+                self.deploy_failures.append("/data/harmony/bin/dropbearmulti (no Ed25519 login)")
+                dropbear_src = None
+            if dropbear_src:
+                dropbear_md5 = get_file_md5(dropbear_src)
+                installed = self.deploy_file_if_changed(dropbear_src, "/data/harmony/bin/dropbearmulti", "755",
+                                                        selftest=DROPBEAR_SELFTEST)
+                dropbear_links = (
+                    "for _a in dropbear dropbearkey scp; do "
+                    "  [ -f /data/harmony/bin/$_a ] && [ ! -L /data/harmony/bin/$_a ] && rm -f /data/harmony/bin/$_a 2>/dev/null; "
+                    "  ln -sf /data/harmony/bin/dropbearmulti /data/harmony/bin/$_a 2>/dev/null || true; "
+                    "done; "
+                    "for _a in dropbearkey scp; do "
+                    "  ln -sf /data/harmony/bin/dropbearmulti /usr/sbin/$_a 2>/dev/null || true; "
+                    "done; "
+                    # the server has no client: drop the dbclient links of older installs
+                    "for _l in /data/harmony/bin/dbclient /usr/sbin/dbclient; do [ -L $_l ] && rm -f $_l; done; "
+                    # the release binary is in place (MD5 checked): the old copies of the USB root
+                    # tool and of the serial guide go
+                    "_harm_m=$(md5sum /data/harmony/bin/dropbearmulti 2>/dev/null | awk '{print $1}'); "
+                    f"if [ \"$_harm_m\" = \"{dropbear_md5}\" ]; then "
+                    "  rm -f /data/dropbearmulti /usr/sbin/dropbearmulti 2>/dev/null || true; "
+                    "fi"
+                )
+                if installed and not self.dry_skip("create dropbear multicall symlinks and safely deduplicate"):
+                    self.run_ssh(dropbear_links)
+                    self.ensure_ed25519_host_key()
 
             # Deploy core binaries
             if (self.bin_dir / "hub_util").is_file():
@@ -483,42 +710,18 @@ class HubDeployer:
                 )
                 if not self.dry_skip("create hub_util symlinks and purge legacy standalone binaries"):
                     self.run_ssh(util_setup)
-                core_bins = ["hub_daemon", "hub_rf", "hub_btstack"]
+                core_bins = ["hub_daemon", "hub_fetch", "hub_rf", "hub_btstack"]
             else:
                 core_bins = [
-                    "hub_daemon", "hub_rf", "hub_sntp", "hub_btstack", "hub_sync",
+                    "hub_daemon", "hub_fetch", "hub_rf", "hub_sntp", "hub_btstack", "hub_sync",
                     "mknod", "register_ehci", "eth_fix"
                 ]
             for b in core_bins:
                 src = self.bin_dir / b
+                if b == "hub_btstack" and self.dev_btstack:
+                    src = self.dev_btstack_bin
                 if src.is_file():
                     self.deploy_file_if_changed(src, f"/data/harmony/bin/{b}", "755")
-
-            # Dropbear SSH server
-            dropbear_src = None
-            if (self.bin_dir / "dropbearmulti").is_file():
-                dropbear_src = self.bin_dir / "dropbearmulti"
-            elif (self.repo_root / "tools" / "bin" / "dropbearmulti_mips").is_file():
-                dropbear_src = self.repo_root / "tools" / "bin" / "dropbearmulti_mips"
-
-            if dropbear_src:
-                self.deploy_file_if_changed(dropbear_src, "/data/harmony/bin/dropbearmulti", "755")
-                dropbear_links = (
-                    "for _a in dropbear dropbearkey dbclient scp; do "
-                    "  [ -f /data/harmony/bin/$_a ] && [ ! -L /data/harmony/bin/$_a ] && rm -f /data/harmony/bin/$_a 2>/dev/null; "
-                    "  ln -sf /data/harmony/bin/dropbearmulti /data/harmony/bin/$_a 2>/dev/null || true; "
-                    "done; "
-                    "for _a in dropbearkey dbclient scp; do "
-                    "  ln -sf /data/harmony/bin/dropbearmulti /usr/sbin/$_a 2>/dev/null || true; "
-                    "done; "
-                    "_harm_m=$(md5sum /data/harmony/bin/dropbearmulti 2>/dev/null | awk '{print $1}'); "
-                    "_data_m=$(md5sum /data/dropbearmulti 2>/dev/null | awk '{print $1}'); "
-                    "if [ -n \"$_harm_m\" ] && { [ \"$_harm_m\" = \"$_data_m\" ] || [ \"$_harm_m\" = \"3733327fd04bca282dbf06f33da0bf6c\" ]; }; then "
-                    "  rm -f /data/dropbearmulti /usr/sbin/dropbearmulti 2>/dev/null || true; "
-                    "fi"
-                )
-                if not self.dry_skip("create dropbear multicall symlinks and safely deduplicate"):
-                    self.run_ssh(dropbear_links)
 
             # Extended BusyBox
             local_bb = self.bin_dir / "busybox"
@@ -529,8 +732,11 @@ class HubDeployer:
                 self.deploy_file_if_changed(local_bb, "/cache/bin/busybox", "755")
                 bb_setup = (
                     "ln -sf /cache/bin/busybox /data/harmony/bin/busybox 2>/dev/null; "
-                    "/cache/bin/busybox --install -s /cache/bin 2>/dev/null || true; "
-                    'for _app in $(/cache/bin/busybox --list 2>/dev/null); do [ ! -e "/bin/$_app" ] && [ ! -e "/usr/bin/$_app" ] && ln -sf /cache/bin/busybox "/usr/bin/$_app" 2>/dev/null || true; done; '
+                    # readlink by path: the stock BusyBox has none, and /usr/bin/readlink is one of
+                    # the links removed here. /cache/bin is cleaned too (links of removed applets).
+                    "bb=/cache/bin/busybox; "
+                    "for _l in /usr/bin/* /cache/bin/*; do [ -L \"$_l\" ] && [ \"$($bb readlink \"$_l\" 2>/dev/null)\" = \"$bb\" ] && rm -f \"$_l\" 2>/dev/null || true; done; "
+                    "$bb --install -s /cache/bin 2>/dev/null || true; "
                     "mkdir -p /etc/profile.d 2>/dev/null; echo 'export PATH=/cache/bin:/data/harmony/bin:$PATH' > /etc/profile.d/00-harmony.sh 2>/dev/null; chmod 644 /etc/profile.d/00-harmony.sh 2>/dev/null || true"
                 )
                 if not self.dry_skip("install BusyBox applet links and /etc/profile.d/00-harmony.sh"):
@@ -604,6 +810,20 @@ class HubDeployer:
                         if cfg.name == "cacert.pem" and not self.dry_run:
                             self.run_ssh("ln -sf /data/harmony/config/cacert.pem /data/harmony/cacert.pem 2>/dev/null || true")
 
+            # Shared libraries for plugins (libbearssl.so.0)
+            # (payload/lib in a checkout; a release bundle has them in bin/, see release.yml)
+            lib_dir = self.repo_root / "payload" / "lib"
+            if self.bundle_layout:
+                libs = sorted(p for p in self.bin_dir.glob("lib*.so*") if p.is_file())
+            else:
+                libs = sorted(p for p in lib_dir.iterdir() if p.is_file()) if lib_dir.is_dir() else []
+            if libs:
+                print("[*] Syncing shared libraries to /data/harmony/lib/...")
+                if not self.dry_run:
+                    self.run_ssh("mkdir -p /data/harmony/lib 2>/dev/null")
+                for lib in libs:
+                    self.deploy_file_if_changed(lib, f"/data/harmony/lib/{lib.name}", "755")
+
             # Deploy USB Ethernet kernel modules
             if self.modules_dir.is_dir():
                 print("[*] Syncing USB Ethernet kernel modules to /cache/modules/...")
@@ -636,9 +856,12 @@ class HubDeployer:
                     print("[-] WebUI build failed. Nothing deployed from this step.", file=sys.stderr)
                     return False
 
+                if not build_webui.ensure_node_modules(ui_src_dir):
+                    print("[-] WebUI build failed. Nothing deployed from this step.", file=sys.stderr)
+                    return False
+
                 print(f"[*] Compiling frontend bundle with Vite ({ui_src_dir.name})...")
-                npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
-                build_res = subprocess.run([npm_cmd, "run", "build"], cwd=ui_src_dir)
+                build_res = subprocess.run([build_webui.npm_command(), "run", "build"], cwd=ui_src_dir)
                 if build_res.returncode != 0 or not (ui_src_dir / "dist" / "index.html").is_file():
                     print(f"[-] WebUI build failed in {ui_src_dir.name}. Nothing deployed from this step.", file=sys.stderr)
                     return False
@@ -692,7 +915,38 @@ class HubDeployer:
                 print("[!] No icon archive: Hub icons left as-is.")
 
         if self.icons_tar.is_file():
-            self.deploy_file_if_changed(self.icons_tar, "/cache/icons.tar.gz", "644")
+            # The Hub reads single icons from a packed archive (tools/icon_pack.py) instead of
+            # unpacking about 6 MB of them into RAM; it is still a plain tar.gz for every reader
+            try:
+                import icon_pack
+            except ImportError as e:
+                # a bundle put together by hand, or an older tools/ folder: deploy as it is
+                icon_pack = None
+                print(f"    [!] tools/icon_pack.py not found ({e}): {self.icons_tar.name} deployed as it is, "
+                      "the Hub unpacks it into RAM as before")
+            icons_src = self.icons_tar
+            packed_tmp = None
+            if icon_pack and not icon_pack.is_packed(self.icons_tar):
+                try:
+                    if self.dry_run:
+                        # pack into a temporary folder, under the archive's own name (the dry run
+                        # prints it): its md5 is what the real run would upload
+                        packed_tmp = tempfile.mkdtemp(prefix="icon_pack.")
+                        packed_path = pathlib.Path(packed_tmp) / self.icons_tar.name
+                        icon_pack.pack(self.icons_tar, packed_path)
+                        icons_src = packed_path
+                        print(f"    [dry-run] would repack {self.icons_tar.name} so the Hub reads icons from flash")
+                    else:
+                        print(f"[*] Repacking {self.icons_tar.name} so the Hub reads icons from flash (not RAM)...")
+                        icon_pack.pack(self.icons_tar, self.icons_tar)
+                except (OSError, ValueError, tarfile.TarError) as e:
+                    print(f"    [!] Could not repack {self.icons_tar.name} ({e}): deployed as it is, "
+                          "the Hub unpacks it into RAM as before")
+            try:
+                self.deploy_file_if_changed(icons_src, "/cache/icons.tar.gz", "644")
+            finally:
+                if packed_tmp:
+                    shutil.rmtree(packed_tmp, ignore_errors=True)
             if not self.dry_run:
                 self.run_ssh(
                     "if [ -f /data/harmony/icons.tar.gz ] && [ ! -L /data/harmony/icons.tar.gz ]; then rm -f /data/harmony/icons.tar.gz 2>/dev/null; fi; "
@@ -759,12 +1013,21 @@ def main() -> None:
     parser.add_argument("--dry-run", "-n", action="store_true", help="Read Hub state and report changes without modifying Hub")
     parser.add_argument("--no-backup", action="store_true", help="Skip pre-deployment backup")
     parser.add_argument("--stage-remote-ota", action="store_true", help="Stage local remote_ui.ota.gz into Hub /tmp/remote_ui.ota.gz (RAM tmpfs) for offline testing")
+    parser.add_argument("--dev-btstack", action="store_true", help="Install the hub_btstack dev build with BTstack info logs (build/output/hub_btstack_dev) instead of the release build")
     ssh_hostkeys.add_reset_option(parser, "the Hub")
+    parser.add_argument("--clean-stock-resources", action="store_true",
+                        help="Empty /data/resources (stock Logitech files) on a Hub whose stock configuration was "
+                             "imported in an earlier run and whose files are saved in backups/stock_resources_<hub>.tar "
+                             "(the pre-deployment backup saves them)")
 
     args = parser.parse_args()
     target_host = args.flag_host or args.host
     if not target_host:
         parser.error("HUB_ADDRESS is required (pass as first argument or --host=IP)")
+    if args.dev_btstack and args.webui_only:
+        parser.error("--dev-btstack installs a binary: it cannot be combined with --webui-only")
+    if args.clean_stock_resources and args.webui_only:
+        parser.error("--clean-stock-resources does not run with --webui-only")
     # Before any USB or device work: a stop here leaves the device untouched
     ssh_hostkeys.require_known_hosts()
     if args.reset_host_key:
@@ -788,6 +1051,8 @@ def main() -> None:
         dry_run=args.dry_run,
         no_backup=args.no_backup,
         stage_remote_ota=args.stage_remote_ota,
+        dev_btstack=args.dev_btstack,
+        clean_stock_resources=args.clean_stock_resources,
     )
     success = deployer.deploy()
     sys.exit(0 if success else 1)

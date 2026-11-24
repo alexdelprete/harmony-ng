@@ -19,6 +19,8 @@
 #include <linux/fb.h>
 #include <linux/input.h>
 #include <sys/inotify.h>
+#include <dirent.h>
+#include <sys/statvfs.h>
 
 #define DEFAULT_MOCK_DIR "/tmp/harmony_mock"
 
@@ -46,6 +48,7 @@ static int g_rf_mock_fd = -1;
  * without the device. Write-only opens (IR sends) are not touched. */
 static int g_i2s_rx_mock_fd = -1;
 static int g_i2s_tx_mock_fd = -1;   /* write-only /dev/i2s: <mock>/i2s_tx, ioctls succeed */
+static off_t g_i2s_tx_played = 0;   /* the size of <mock>/i2s_tx at the open or the start ioctl before */
 
 /* Looked up once for the whole process. Threads that call an interposed function at the same
  * time used to see real_open already set while real_read was still NULL (the old check tested
@@ -156,6 +159,13 @@ static const char *resolve_mock_path(const char *pathname, char *resolved, size_
      * hub_daemon hands over and no pipe of the host is touched */
     if (strcmp(pathname, "/tmp/bthid_input") == 0 && getenv("HARMONY_MOCK_DIR") != NULL) {
         snprintf(resolved, max_len, "%s/bthid_input", md);
+        return resolved;
+    }
+    /* 4c. The orchestrator's switch state files, only for a test that asks: the daemon tests
+     * read the real ones */
+    if (getenv("HARMONY_MOCK_ACTIVITY_FILES") != NULL &&
+        (strcmp(pathname, "/tmp/activity_state") == 0 || strcmp(pathname, "/tmp/activity_target") == 0)) {
+        snprintf(resolved, max_len, "%s/%s", md, pathname + 5);
         return resolved;
     }
     /* and hub_daemon's Bluetooth send log (debug logging) */
@@ -277,6 +287,36 @@ int __xstat(int ver, const char *pathname, struct stat *st) {
     return mock_stat_impl(pathname, st, ver);
 }
 
+/* lstat() of virtualized /data or /cache paths: the real lstat, so a link is seen as a link (the
+ * stock resources delete refuses a link at /data/resources). glibc >= 2.33 exports lstat as a
+ * real symbol; older ones use __lxstat. */
+static int mock_lstat_impl(const char *pathname, struct stat *st, int ver) {
+    static int (*real_lstat)(const char *, struct stat *) = NULL;
+    static int (*real_lxstat)(int, const char *, struct stat *) = NULL;
+    if (!real_lstat && !real_lxstat) {
+        real_lstat = dlsym(RTLD_NEXT, "lstat");
+        real_lxstat = dlsym(RTLD_NEXT, "__lxstat");
+    }
+    char resolved[512];
+    int special_type = 0;
+    const char *target = pathname;
+    if (pathname && (strncmp(pathname, "/data/", 6) == 0 || strncmp(pathname, "/cache/", 7) == 0)) {
+        target = resolve_mock_path(pathname, resolved, sizeof(resolved), &special_type);
+    }
+    if (real_lstat) return real_lstat(target, st);
+    if (real_lxstat) return real_lxstat(ver, target, st);
+    errno = ENOSYS;
+    return -1;
+}
+
+int lstat(const char *pathname, struct stat *st) {
+    return mock_lstat_impl(pathname, st, 1);
+}
+
+int __lxstat(int ver, const char *pathname, struct stat *st) {
+    return mock_lstat_impl(pathname, st, ver);
+}
+
 int unlink(const char *pathname) {
     init_real_functions();
     char resolved[512];
@@ -284,6 +324,33 @@ int unlink(const char *pathname) {
     const char *target = resolve_mock_path(pathname, resolved, sizeof(resolved), &special_type);
     return real_unlink(target);
 }
+
+int unlinkat(int dirfd, const char *pathname, int flags) {
+    init_real_functions();
+    char resolved[512];
+    int special_type = 0;
+    const char *target = pathname;
+    if (dirfd == AT_FDCWD && pathname && (strncmp(pathname, "/data/", 6) == 0 || strncmp(pathname, "/cache/", 7) == 0)) {
+        target = resolve_mock_path(pathname, resolved, sizeof(resolved), &special_type);
+    }
+    static int (*real_unlinkat)(int, const char *, int) = NULL;
+    if (!real_unlinkat) real_unlinkat = dlsym(RTLD_NEXT, "unlinkat");
+    return real_unlinkat ? real_unlinkat(dirfd, target, flags) : -1;
+}
+
+int rmdir(const char *pathname) {
+    init_real_functions();
+    char resolved[512];
+    int special_type = 0;
+    const char *target = pathname;
+    if (pathname && (strncmp(pathname, "/data/", 6) == 0 || strncmp(pathname, "/cache/", 7) == 0)) {
+        target = resolve_mock_path(pathname, resolved, sizeof(resolved), &special_type);
+    }
+    static int (*real_rmdir)(const char *) = NULL;
+    if (!real_rmdir) real_rmdir = dlsym(RTLD_NEXT, "rmdir");
+    return real_rmdir ? real_rmdir(target) : -1;
+}
+
 
 int access(const char *pathname, int mode) {
     init_real_functions();
@@ -316,6 +383,32 @@ int execv(const char *path, char *const argv[]) {
     return real_execv(target, argv);
 }
 
+int mkdir(const char *pathname, mode_t mode) {
+    init_real_functions();
+    char resolved[512];
+    int special_type = 0;
+    const char *target = pathname;
+    if (pathname && (strncmp(pathname, "/data/", 6) == 0 || strncmp(pathname, "/cache/", 7) == 0)) {
+        target = resolve_mock_path(pathname, resolved, sizeof(resolved), &special_type);
+    }
+    static int (*real_mkdir)(const char *, mode_t) = NULL;
+    if (!real_mkdir) real_mkdir = dlsym(RTLD_NEXT, "mkdir");
+    return real_mkdir ? real_mkdir(target, mode) : -1;
+}
+
+int statvfs(const char *path, struct statvfs *buf) {
+    init_real_functions();
+    char resolved[512];
+    int special_type = 0;
+    const char *target = path;
+    if (path && (strncmp(path, "/data/", 6) == 0 || strncmp(path, "/cache/", 7) == 0)) {
+        target = resolve_mock_path(path, resolved, sizeof(resolved), &special_type);
+    }
+    static int (*real_statvfs)(const char *, struct statvfs *) = NULL;
+    if (!real_statvfs) real_statvfs = dlsym(RTLD_NEXT, "statvfs");
+    return real_statvfs ? real_statvfs(target, buf) : -1;
+}
+
 int open(const char *pathname, int flags, ...) {
     init_real_functions();
     ensure_mock_dirs();
@@ -332,7 +425,7 @@ int open(const char *pathname, int flags, ...) {
         char tx[512];
         snprintf(tx, sizeof(tx), "%s/i2s_tx", get_mock_dir());
         int fd = real_open(tx, O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (fd >= 0) g_i2s_tx_mock_fd = fd;
+        if (fd >= 0) { g_i2s_tx_mock_fd = fd; g_i2s_tx_played = lseek(fd, 0, SEEK_END); }
         return fd;
     }
     if (strcmp(pathname, "/dev/i2s") == 0 && (flags & O_ACCMODE) == O_RDONLY) {
@@ -403,7 +496,7 @@ int open64(const char *pathname, int flags, ...) {
         char tx[512];
         snprintf(tx, sizeof(tx), "%s/i2s_tx", get_mock_dir());
         int fd = real_open64(tx, O_WRONLY | O_CREAT | O_APPEND, 0644);
-        if (fd >= 0) g_i2s_tx_mock_fd = fd;
+        if (fd >= 0) { g_i2s_tx_mock_fd = fd; g_i2s_tx_played = lseek(fd, 0, SEEK_END); }
         return fd;
     }
     if (strcmp(pathname, "/dev/i2s") == 0 && (flags & O_ACCMODE) == O_RDONLY) {
@@ -519,9 +612,10 @@ int ioctl(int fd, unsigned long request, ...) {
      * many milliseconds, so a test can act while a send is running. */
     if (fd == g_i2s_tx_mock_fd && g_i2s_tx_mock_fd >= 0) {
         /* With <mock>/i2s_tx_realtime a signal takes as long as on a Hub: the clock ioctl
-         * (0x80044e21) gives the bit time (arg * 40 / 65536 ns), the start ioctl (0x80044e30)
-         * the stream length in bytes, and the drain returns when that much time has passed
-         * since the start. Each start adds "<start us> <bytes> <duration us>" to
+         * (0x80044e21) gives the bit time (arg * 40 / 65536 ns), the stream is what was written
+         * since the start before (as on a Hub, where the start ioctl's low word is only the
+         * play-once flag), and the drain returns when that much time has passed since the
+         * start. Each start adds "<start us> <bytes> <duration us>" to
          * <mock>/i2s_tx_log (CLOCK_MONOTONIC), so a test can time the frames of a held key. */
         static unsigned long tx_clk = 0;
         static long long tx_start_us = 0, tx_len_us = 0;
@@ -534,7 +628,9 @@ int ioctl(int fd, unsigned long request, ...) {
         if (request == 0x80044e21UL) {
             tx_clk = (unsigned long)arg;
         } else if (request == 0x80044e30UL && realtime) {
-            unsigned long bytes = (unsigned long)arg & 0xffffUL;
+            off_t written = lseek(fd, 0, SEEK_CUR);
+            unsigned long bytes = written > g_i2s_tx_played ? (unsigned long)(written - g_i2s_tx_played) : 0;
+            if (written >= 0) g_i2s_tx_played = written;
             tx_start_us = now_us;
             tx_len_us = (long long)((unsigned long long)bytes * 8ULL * tx_clk * 40ULL / 65536ULL / 1000ULL);
             snprintf(p, sizeof(p), "%s/i2s_tx_log", get_mock_dir());

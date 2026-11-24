@@ -46,7 +46,7 @@ int main(void) {
     g_remote_batteries[0].voltage_mv = 3950;
     g_remote_link[0].frames_rx = 10;
 
-    char full[3584], stable_a[3584], stable_b[3584];
+    static char full[8192], stable_a[8192], stable_b[8192]; /* 6 slots, as hub_rf */
     int n = rf_build_status_json(full, sizeof(full), 0);
     CHECK(n > 0 && n == (int)strlen(full), "full form built");
     CHECK(g_radio_writes == 0, "no radio query without RF_STATUS_QUERY_RADIO");
@@ -115,12 +115,42 @@ int main(void) {
     }
     rf_build_status_json(stable_b, sizeof(stable_b), RF_STATUS_STABLE_ONLY);
     CHECK(strcmp(stable_a, stable_b) != 0, "a reported remote_id is a change (pushed)");
+
+    /* Every slot is listed, in slot order, empty or not */
+    rf_build_status_json(full, sizeof(full), 0);
+    j = parse(full);
+    CHECK(j && cJSON_GetArraySize(cJSON_GetObjectItem(j, "slots")) == MAX_PAIRED_REMOTES, "all six slots listed while 3 to 6 are empty");
+    cJSON_Delete(j);
+    g_paired_remotes[4].active = true;
+    g_paired_remotes[4].rf_addr[0] = 0x11;
+    static char six[8192];
+    CHECK(rf_build_status_json(six, sizeof(six), 0) > 0, "status with a remote in slot 5 built");
+    j = parse(six);
+    if (j) {
+        cJSON *slots = cJSON_GetObjectItem(j, "slots");
+        cJSON *s5 = cJSON_GetArrayItem(slots, 4);
+        CHECK(cJSON_GetArraySize(slots) == MAX_PAIRED_REMOTES && s5 && cJSON_GetObjectItem(s5, "slot")->valueint == 5,
+              "the remote in slot 5 is listed fifth");
+        CHECK(cJSON_IsTrue(cJSON_GetObjectItem(s5, "active")), "slot 5 active");
+        cJSON_Delete(j);
+    }
+    for (int i = 2; i < MAX_PAIRED_REMOTES; i++) {
+        g_paired_remotes[i].active = true;
+        g_paired_remotes[i].rf_addr[0] = 0x11;
+        g_remote_batteries[i].voltage_mv = 3950;
+        g_remote_link[i].frames_rx = 4000000000u;
+    }
+    CHECK(rf_build_status_json(six, sizeof(six), 0) > 0, "status of 6 paired remotes fits 8 KB");
+    for (int i = 2; i < MAX_PAIRED_REMOTES; i++) {
+        g_paired_remotes[i].active = false;
+        memset(g_paired_remotes[i].rf_addr, 0, sizeof(g_paired_remotes[i].rf_addr));
+    }
     char vjson[256];
     CHECK(rf_state_version_json(1, vjson, sizeof(vjson)) > 0 && strstr(vjson, "\"remote_id\":\"20140101120000-000002\"") != NULL,
           "version file JSON carries the remote_id");
     CHECK(rf_state_version_json(2, vjson, sizeof(vjson)) > 0 && strstr(vjson, "remote_id") == NULL,
           "version file JSON without a remote_id when none");
-    CHECK(rf_state_version_json(3, vjson, sizeof(vjson)) == -1, "version file JSON rejects slot 3");
+    CHECK(rf_state_version_json(7, vjson, sizeof(vjson)) == -1, "version file JSON rejects slot 7");
 
     /* A config push rewrites the version file: the unit id and skin must stay in it, so a hub_rf
      * restart (which reads the file back) still knows the remote and its model */

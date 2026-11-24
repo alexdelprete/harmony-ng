@@ -8,6 +8,7 @@
 #include "rf_api.h"
 #include "rf_config_push.h"
 #include "rf_help.h"
+#include "rf_push_queue.h"
 #include "atomic_file.h"
 
 #include <stdio.h>
@@ -77,32 +78,36 @@ static void enqueue_browsed_device_cmd(const uint8_t *payload) {
 }
 
 void handle_rf_frame(const rf_frame_t *f) {
-    /* hub_rf keeps state for slots 1 and 2 only; the handlers below map any other slot to 1, so
-       a frame from a device in another CC2544 slot (a third paired device) would be applied to
-       the remote in slot 1: its version, battery, keys, and an unpair notice that unpairs it */
+    /* hub_rf keeps state for slots 1 to MAX_PAIRED_REMOTES; a frame from any other slot number
+       is refused here, so it is never applied to the remote of another slot (its version,
+       battery, keys, or an unpair notice that would unpair it) */
     uint8_t fslot = f->dev_slot & 0x0F;
     if (fslot > MAX_PAIRED_REMOTES) {
         static uint16_t s_logged; /* one line per slot */
         if (!(s_logged & (1u << fslot))) {
             s_logged |= (uint16_t)(1u << fslot);
-            printf("[-] RF frame type 0x%02X from slot %u ignored: only slots 1 and 2 hold a remote\n", f->msg_type, fslot);
+            printf("[-] RF frame type 0x%02X from slot %u ignored: only slots 1 to %d hold a remote\n", f->msg_type, fslot, MAX_PAIRED_REMOTES);
         }
         return;
     }
-    if (f->dev_slot == 1 || f->dev_slot == 2) {
+    if (f->dev_slot >= 1 && f->dev_slot <= MAX_PAIRED_REMOTES) {
         mark_remote_slot_active(f->dev_slot);
         rf_slot_saw_protocol_frame(f->dev_slot);
     }
     switch (f->msg_type) {
         case RF_MSG_ACK: {
             ota_note_chunk_ack(f->dev_slot, f->payload);
-            rf_signal_ack_from(f->dev_slot, f->payload[0], f->payload[1], f->payload);
+            push_note_stream_ack(f->dev_slot, f->payload);
+            /* a stream ACK belongs to the streamed push only: its 4-bit index would complete
+             * another thread's acked send to the same remote */
+            if (f->payload[4] != RF_PUSH_STREAMED)
+                rf_signal_ack_from(f->dev_slot, f->payload[0], f->payload[1], f->payload);
             break;
         }
 
         case RF_MSG_BUTTON_PRESS: {
             uint8_t slot = (f->dev_slot & 0x0F);
-            if (slot < 1 || slot > 2) slot = 1;
+            if (slot < 1 || slot > MAX_PAIRED_REMOTES) slot = 1;
             uint16_t key_code = ((uint16_t)f->payload[0] << 8) | f->payload[1];
             uint8_t state = f->payload[2];
             char btn_name[18] = {0};
@@ -153,7 +158,7 @@ void handle_rf_frame(const rf_frame_t *f) {
 
         case RF_MSG_DEVICE_CMD_REQUEST: {
             uint8_t slot = (f->dev_slot & 0x0F);
-            if (slot < 1 || slot > 2) slot = 1;
+            if (slot < 1 || slot > MAX_PAIRED_REMOTES) slot = 1;
             char act_or_dev[13] = {0};
             memcpy(act_or_dev, f->payload, 10);
             uint8_t btn_idx = f->payload[10];
@@ -218,16 +223,14 @@ void handle_rf_frame(const rf_frame_t *f) {
             uint8_t slot = f->dev_slot ? f->dev_slot : (g_remote_slot ? g_remote_slot : 0x01);
             printf("[*] SYNC_REQUEST: type=%d seq=%d slot=%d\n", req_type, f->seq, slot);
 
-            char cur[32] = "-1";
-            get_current_activity(cur, sizeof(cur));
-            rf_send_hub_activity_sync_slot(cur, f->seq, slot, 0x01);
+            rf_send_hub_activity_query_reply(f->seq, slot);
 
             if (req_type == 0x02) {
                 rf_sync_cache_invalidate();
                 rf_keymap_invalidate_map(0);
                 usleep(50000);
                 pthread_t push_th;
-                if (pthread_create(&push_th, NULL, config_push_worker, NULL) == 0) pthread_detach(push_th);
+                if (rf_create_thread(&push_th, 128 * 1024, config_push_worker, NULL) == 0) pthread_detach(push_th);
                 else printf("[-] Config push not started (the remote asks again)\n");
             } else {
                 usleep(10000);
@@ -238,7 +241,7 @@ void handle_rf_frame(const rf_frame_t *f) {
 
         case RF_MSG_BATTERY_STATUS: {
             uint8_t slot = f->dev_slot & 0x0F;
-            if (slot < 1 || slot > 2) slot = 1;
+            if (slot < 1 || slot > MAX_PAIRED_REMOTES) slot = 1;
             int idx = slot - 1;
             rf_battery_note_report(slot, f->payload[0], f->payload[1],
                                    (uint16_t)f->payload[2] | ((uint16_t)f->payload[3] << 8));
@@ -257,7 +260,7 @@ void handle_rf_frame(const rf_frame_t *f) {
 
         case RF_MSG_REMOTE_CONFIG_BACKUP: {
             uint8_t slot = f->dev_slot & 0x0F;
-            if (slot < 1 || slot > 2) slot = 1;
+            if (slot < 1 || slot > MAX_PAIRED_REMOTES) slot = 1;
             printf("[*] REMOTE_CONFIG_BACKUP: Slot %d\n", slot);
             save_remote_config_backup(slot, f->payload);
             if (!is_ota_busy()) {
@@ -270,7 +273,7 @@ void handle_rf_frame(const rf_frame_t *f) {
 
         case RF_MSG_VERSION_REPORT: {
             uint8_t slot = f->dev_slot & 0x0F;
-            if (slot < 1 || slot > 2) slot = 1;
+            if (slot < 1 || slot > MAX_PAIRED_REMOTES) slot = 1;
             uint8_t maj = f->payload[0];
             uint8_t min = f->payload[1];
             uint8_t pat = f->payload[2];
@@ -284,6 +287,12 @@ void handle_rf_frame(const rf_frame_t *f) {
             bool ver_changed = strcmp(g_remote_versions[idx].sw_version, new_ver) != 0 ||
                                g_remote_versions[idx].config_version != cfg_ver ||
                                g_remote_versions[idx].caps != caps;
+            /* The push depends on the caps (Warmup steps, Help keys): a remote whose caps changed
+               (an update, or init.sh falling back to remote_ui.bak) keeps a list built for the old
+               ones. A new config version makes it ask for the push. Not for a remote not heard
+               before: its pairing pushes anyway. */
+            bool caps_changed = g_remote_versions[idx].caps != caps &&
+                                strcmp(g_remote_versions[idx].sw_version, "unknown") != 0;
             snprintf(g_remote_versions[idx].sw_version, sizeof(g_remote_versions[idx].sw_version), "%s", new_ver);
             g_remote_versions[idx].config_version = cfg_ver;
             g_remote_versions[idx].caps = caps;
@@ -293,6 +302,10 @@ void handle_rf_frame(const rf_frame_t *f) {
             snprintf(vpath, sizeof(vpath), "/data/harmony/remote_slot%d_version.json", slot);
             if (ver_changed || access(vpath, F_OK) != 0) rf_state_save_version_file(slot);
             printf("[*] VERSION_REPORT: Slot %d -> SW v%s, Config v%d, caps 0x%02X\n", slot, g_remote_versions[idx].sw_version, cfg_ver, caps);
+            if (caps_changed && cfg_ver == g_config_version) {
+                printf("[*] Slot %d capabilities changed: new config version for a push\n", slot);
+                rf_config_version_bump();
+            }
             rf_key_note_restart_hint(slot); /* sent when remote_ui starts: its key counter may begin at 1 again */
             rf_frame_t ack;
             rf_build_ack(&ack, slot, f->seq, 0x00);
@@ -309,7 +322,7 @@ void handle_rf_frame(const rf_frame_t *f) {
         case RF_MSG_UNIT_ID: {
             /* The remote's factory unit id and skin id (rf_proto.h), applied by rf_state.c */
             uint8_t slot = f->dev_slot & 0x0F;
-            if (slot < 1 || slot > 2) slot = 1;
+            if (slot < 1 || slot > MAX_PAIRED_REMOTES) slot = 1;
             if (rf_slot_apply_unit_id(slot, f->payload)) rf_state_save_version_file(slot);
             rf_key_note_restart_hint(slot); /* follows every version report, which may have been lost */
             rf_frame_t ack;
@@ -320,7 +333,7 @@ void handle_rf_frame(const rf_frame_t *f) {
 
         case RF_MSG_OTA_REQUEST: {
             uint8_t slot = f->dev_slot & 0x0F;
-            if (slot < 1 || slot > 2) slot = g_remote_slot ? g_remote_slot : 1;
+            if (slot < 1 || slot > MAX_PAIRED_REMOTES) slot = g_remote_slot ? g_remote_slot : 1;
             printf("[*] Remote in slot %d requested RF OTA pull\n", slot);
             pthread_mutex_lock(&g_ota_lock);
             if (!g_rf_ota.in_progress && g_rf_ota.status_code != 3) {
@@ -329,7 +342,7 @@ void handle_rf_frame(const rf_frame_t *f) {
                 g_rf_ota.status_code = 3;
                 snprintf(g_rf_ota.error_msg, sizeof(g_rf_ota.error_msg), "Preparing OTA update...");
                 pthread_t ota_th;
-                if (pthread_create(&ota_th, NULL, rf_ota_sender_worker, (void *)(uintptr_t)slot) == 0) {
+                if (rf_create_thread(&ota_th, 64 * 1024, rf_ota_sender_worker, (void *)(uintptr_t)slot) == 0) {
                     pthread_detach(ota_th);
                     rf_frame_t ack;
                     rf_build_ack(&ack, slot, f->seq, 0x00);
@@ -351,18 +364,18 @@ void handle_rf_frame(const rf_frame_t *f) {
 
         case RF_MSG_UNPAIR_NOTIFY: {
             uint8_t slot = f->dev_slot & 0x0F;
-            if (slot < 1 || slot > 2) slot = 1;
+            if (slot < 1 || slot > MAX_PAIRED_REMOTES) slot = 1;
             RF_LOG(LOG_LEVEL_INFO, "[*] UNPAIR_NOTIFY received from Remote Slot %d\n", slot);
             /* The ACK first: once the slot is removed from the CC2544 it cannot reach the remote */
             rf_frame_t ack;
             rf_build_ack(&ack, slot, f->seq, 0x00);
             rf_send_frame(&ack);
             usleep(30000);
-            uint8_t s = (slot == 2) ? 0x02 : 0x01;
-            uint8_t unpair[7] = {0x10, 0xFF, 0x80, 0xB2, 0x03, s, 0x00};
+            uint8_t unpair[7] = {0x10, 0xFF, 0x80, 0xB2, 0x03, rf_slot_to_pipe(slot), 0x00};
+            rf_slot_map_note_table(rf_slot_to_pipe(slot), false); /* a pairing on this pipe is then a new one */
             rf_write_cmd(unpair, sizeof(unpair));
             rf_slot_forget(slot); /* the same cleanup as an unpair from the Hub */
-            if (!g_paired_remotes[0].active && !g_paired_remotes[1].active) {
+            if (!rf_any_slot_active()) {
                 g_has_paired_device = false;
                 memset(g_paired_addr, 0, sizeof(g_paired_addr));
             }
@@ -380,6 +393,12 @@ void handle_rf_frame(const rf_frame_t *f) {
             RF_LOG(LOG_LEVEL_DEBUG, "[*] RF unknown type 0x%02X\n", f->msg_type);
             break;
     }
+}
+
+/* A restart was asked for (POST /api/rf/restart) and nothing runs that it would cut short */
+bool rf_restart_due(void) {
+    return g_restart_requested && !rf_config_push_active() && !is_ota_busy() && g_rf_ota.status_code != 3 &&
+           !g_pairing_mode;
 }
 
 static void sig_handler(int sig) {
@@ -454,7 +473,7 @@ int main(int argc, char **argv) {
     rf_migrate_legacy_names();
 
     /* Load last known remote software and config versions (and unit id) from disk */
-    for (int slot = 1; slot <= 2; slot++) {
+    for (int slot = 1; slot <= MAX_PAIRED_REMOTES; slot++) {
         rf_state_load_version_file(slot);
 
         /* The battery state is no longer kept on flash: remove a file left by older builds */
@@ -481,21 +500,21 @@ int main(int argc, char **argv) {
     usleep(50000);
 
     pthread_t rx_th;
-    if (pthread_create(&rx_th, NULL, rx_worker, NULL) != 0) {
+    if (rf_create_thread(&rx_th, 64 * 1024, rx_worker, NULL) != 0) {
         perror("pthread_create rx_worker");
         rf_spi_close();
         return 1;
     }
 
     pthread_t disp_th;
-    if (pthread_create(&disp_th, NULL, dispatch_worker, NULL) != 0) {
+    if (rf_create_thread(&disp_th, 64 * 1024, dispatch_worker, NULL) != 0) {
         perror("pthread_create dispatch_worker");
         rf_spi_close();
         return 1;
     }
 
     pthread_t sync_th;
-    if (pthread_create(&sync_th, NULL, activity_sync_worker, NULL) != 0) {
+    if (rf_create_thread(&sync_th, 64 * 1024, activity_sync_worker, NULL) != 0) {
         perror("pthread_create activity_sync_worker");
         rf_spi_close();
         return 1;
@@ -506,18 +525,20 @@ int main(int argc, char **argv) {
     rf_write_cmd(pkt_ver, sizeof(pkt_ver));
     usleep(50000);
 
+    rf_slot_map_load();
+    g_rf_push_starter = rf_request_config_push; /* a pipe moved to a chosen slot pushes again */
     query_paired_devices();
 
     /* Start local REST API thread and Hub button listener */
     pthread_t api_th;
-    if (pthread_create(&api_th, NULL, api_server_worker, NULL) != 0) {
+    if (rf_create_thread(&api_th, 64 * 1024, api_server_worker, NULL) != 0) {
         perror("pthread_create api_server_worker");
     } else {
         printf("[+] RF API listening on http://127.0.0.1:%d/api/rf/...\n", RF_API_PORT);
     }
 
     pthread_t btn_th;
-    if (pthread_create(&btn_th, NULL, hub_button_worker, NULL) != 0) {
+    if (rf_create_thread(&btn_th, 64 * 1024, hub_button_worker, NULL) != 0) {
         perror("pthread_create hub_button_worker");
     }
 
@@ -542,13 +563,22 @@ int main(int argc, char **argv) {
      * it into an rf_status event; the link counters and the battery voltage are not changes. */
     char *last_key = NULL;
     int push_failing = 0;
+    bool restarting = false;
     while (g_running) {
         sleep(1);
+        if (rf_restart_due()) {
+            /* the same way out as SIGTERM: /dev/rfspi is closed below, init.sh starts hub_rf again */
+            printf("[*] hub_rf restarts to read the restored slot table\n");
+            restarting = true;
+            g_running = false;
+            break;
+        }
+        rf_config_push_retry_skipped();
         rf_battery_fix_times(); /* a report from before the clock was set gets its reported_at */
-        char key[3584];
+        char key[8192]; /* 6 slots */
         if (rf_build_status_json(key, sizeof(key), RF_STATUS_STABLE_ONLY) < 0) continue;
         if (last_key && strcmp(last_key, key) == 0) continue;
-        char body[3584];
+        char body[8192];
         int blen = rf_build_status_json(body, sizeof(body), 0);
         if (blen <= 0) continue;
         char resp[128];
@@ -570,7 +600,24 @@ int main(int argc, char **argv) {
     }
     free(last_key);
 
+    /* The process must end now, also when a thread is stuck: the receive thread sits in the
+     * CC2544 driver's read(), and exit() runs libc's clean-up, which takes stdio locks a stuck
+     * thread may hold (a contended lock spins on the Hub, its kernel has no futex). SIGALRM has
+     * no handler here (no thread blocks it, uClibc's sleep() and usleep() use nanosleep), so the
+     * kernel ends the whole process after 5 s, also when this thread is stuck in rf_spi_close();
+     * only a thread asleep uninterruptibly in a driver could delay it. init.sh starts hub_rf
+     * again either way; after SIGTERM, init.sh stop sends SIGKILL 3 s later anyway. */
+    alarm(5);
     printf("[+] Shutting down hub_rf...\n");
     rf_spi_close();
+    /* The close is what can hang; the state move below only writes files. Those writes can take
+     * seconds on the Hub's flash (JFFS2 garbage collection) but they finish, and a SIGALRM in the
+     * middle would leave the slots half moved (two remotes swapping slots: one slot with the
+     * other's files, the other never rewritten). So the move gets its own 5 s, counted from the
+     * end of the close (alarm() replaces the pending alarm), and the way out stays bounded:
+     * at most 5 s for the close, then 5 s for the move and exit(). */
+    alarm(5);
+    /* after the close: no frame is handled under the old table any more */
+    if (restarting) rf_slot_map_follow_file();
     return g_rf_read_failed ? 1 : 0;
 }

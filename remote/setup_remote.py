@@ -437,7 +437,7 @@ def step1_enable_usb_debug(pubkey_str: str, skip_fw_check: bool = False) -> bool
         sys.path.insert(0, str(REPO_DIR))
 
     try:
-        from tools.harmony_hid import HarmonyHid, REMOTE_PID
+        from tools.harmony_hid import HarmonyHid, REMOTE_PID, usb_open_failure_message
     except ImportError as e:
         print(f"[-] Error: Could not import tools.harmony_hid: {e}")
         return False
@@ -445,6 +445,7 @@ def step1_enable_usb_debug(pubkey_str: str, skip_fw_check: bool = False) -> bool
     print("[*] Connecting to Harmony Remote over USB HID...")
     time.sleep(0.3)
     hid = None
+    tried = []
 
     for pid in (REMOTE_PID, 0xC132):
         h = HarmonyHid(pid=pid)
@@ -452,10 +453,15 @@ def step1_enable_usb_debug(pubkey_str: str, skip_fw_check: bool = False) -> bool
             hid = h
             print(f"[+] Connected to Harmony Remote over USB HID (046D:{pid:04X})")
             break
+        tried.append(h)
 
     if not hid:
-        print("[-] USB connection failed.")
-        print("    Ensure remote is plugged in via USB and powered ON.")
+        failure = usb_open_failure_message(tried)
+        if failure:
+            print("[-] " + failure.replace("\n", "\n    "))
+        else:
+            print("[-] USB connection failed.")
+            print("    Ensure remote is plugged in via USB and powered ON.")
         return False
 
     try:
@@ -691,13 +697,16 @@ def update_ssh_config(key_path: pathlib.Path, write: bool = False) -> None:
     gets a new host key when it is rooted; setup_remote.py forgets the old key when it
     installs SSH, and the tools' --reset-host-key does it by hand."""
     config_path = pathlib.Path.home() / ".ssh" / "config"
+    kh_val = ssh_hostkeys.known_hosts_value()
+    if " " in kh_val:
+        kh_val = f'"{kh_val}"'
     config_entry = (
         f"\nHost {REMOTE_IP} harmony-remote\n"
         f"    HostName {REMOTE_IP}\n"
         f"    User root\n"
         f"    IdentityFile {key_path}\n"
         f"    StrictHostKeyChecking accept-new\n"
-        f"    UserKnownHostsFile {ssh_hostkeys.known_hosts_value()}\n"
+        f"    UserKnownHostsFile {kh_val}\n"
         f"    HostKeyAlias {ssh_hostkeys.entry_name(REMOTE_IP)}\n"
         f"    CheckHostIP no\n"
     )
@@ -1085,8 +1094,10 @@ def main():
 
     # Dynamic Automated Execution based on USB State
     if pre_state.mode == UsbMode.DISCONNECTED:
-        print("[-] Remote is not detected on USB bus.")
-        print("    Ensure remote is plugged in via direct Micro-USB cable (bottom port) and powered ON.")
+        # error_details: on USB but not openable (Linux); the banner above already said why
+        if not pre_state.error_details:
+            print("[-] Remote is not detected on USB bus.")
+            print("    Ensure remote is plugged in via direct Micro-USB cable (bottom port) and powered ON.")
         sys.exit(1)
 
     if pre_state.mode == UsbMode.DRIVER_ERROR:
@@ -1096,7 +1107,7 @@ def main():
 
     if pre_state.mode == UsbMode.USB_ETHERNET:
         if not pre_state.ip_valid and pre_state.remediation_cmd:
-            print(f"[!] Warning: Host network adapter lacks static IP 192.168.2.2.")
+            print("[!] Warning: Host network adapter lacks a static IP in 192.168.2.0/24 that no other adapter has.")
             print(f"    Action required: {pre_state.remediation_cmd}")
 
         if probe_tcp(REMOTE_IP, 22, timeout_s=0.5):

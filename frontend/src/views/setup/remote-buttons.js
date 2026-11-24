@@ -176,11 +176,15 @@ function actionOf(b) {
   if (a === 'device_cmd' || a === 'command' || (!a && b.command && (b.deviceId || b.targetDevice))) return 'command';
   if (a === 'activity_start' || a === 'change_activity') return 'activity';
   if (a === 'activity_stop' || a === 'poweroff') return 'poweroff';
+  if (a === 'help') return 'help';
   return a === 'none' ? 'none' : `unsupported:${a}`;
 }
 
+export const RF_SLOT_COUNT = 6; /* the Hub's remote slots (REMOTE_SLOT_MAX) */
+
 export function createButtonEditor() {
   let slot = 1;
+  let screenless = false; // the slot's remote has no screen (Companion, Smart Control): no device bindings
   let map = { activities: {}, devices: {} };
   let devices = [];
   let ctx = 'a:-1';
@@ -205,6 +209,7 @@ export function createButtonEditor() {
       case 'command': return `${deviceName(b.deviceId || b.targetDevice)} › ${b.command}`;
       case 'activity': return t('start_activity_name', 'Start {name}', { name: activityName(b.activityId || b.targetActivity || b.deviceId) });
       case 'poweroff': return t('turn_everything_off', 'Turn everything off');
+      case 'help': return t('map_action_help', 'Activity Help (Repair)');
       case 'none': return t('binding_nothing', 'Nothing');
       default: return t('binding_unsupported', 'Not supported by the Hub ({action})', { action: b.action || b.type });
     }
@@ -366,7 +371,13 @@ export function createButtonEditor() {
     text: t('revert', 'Revert'),
     onclick: () => load(slot),
   });
-  const otherSlot = () => (slot === 1 ? 2 : 1);
+  const copyFrom = h('select', {
+    className: 'form-select',
+    'aria-label': t('copy_from', 'Copy from'),
+    style: { width: 'auto' },
+    onchange: () => refresh(),
+  });
+  const otherSlot = () => Number(copyFrom.value);
   const copyBtn = h('button', {
     className: 'btn btn-secondary btn-sm',
     onclick: async () => {
@@ -500,7 +511,7 @@ export function createButtonEditor() {
         ...activities().map(a => opt(`a:${a.id}`, a.name)),
         opt('a:-1', t('ctx_no_activity_defaults', 'No activity (defaults for all activities)')),
       ]),
-      h('optgroup', { label: t('ctx_devices_on_remote', 'Devices (on the remote\'s Devices screen)') }, devices.map(d => opt(`d:${d.id}`, d.name))),
+      ...(screenless ? [] : [h('optgroup', { label: t('ctx_devices_on_remote', 'Devices (on the remote\'s Devices screen)') }, devices.map(d => opt(`d:${d.id}`, d.name)))]),
     ];
   }
 
@@ -586,6 +597,7 @@ export function createButtonEditor() {
         ['command', t('mode_send_device_command', 'Send a device command')],
         ['activity', t('mode_start_activity', 'Start an activity')],
         ['poweroff', t('turn_everything_off', 'Turn everything off')],
+        ['help', t('map_action_help', 'Activity Help (Repair)')],
         ['none', isDefaults ? t('binding_nothing', 'Nothing') : t('mode_nothing_ignore_default', 'Nothing (ignore the default)')],
       ];
     if (mode.startsWith('unsupported:')) modes.push([mode, describe(own)]);
@@ -604,6 +616,7 @@ export function createButtonEditor() {
         } else if (m === 'activity') {
           setBinding(selected, { type: 'activity_start', action: 'activity_start', activityId: String(activities()[0]?.id || '') });
         } else if (m === 'poweroff') setBinding(selected, { type: 'activity_stop', action: 'activity_stop' });
+        else if (m === 'help') setBinding(selected, { type: 'help', action: 'help' });
         else if (m === 'none') setBinding(selected, { type: 'none', action: 'none' });
       },
     }, modes.map(([v, text]) => h('option', { value: v, text, selected: v === mode })));
@@ -666,6 +679,10 @@ export function createButtonEditor() {
 
   function refresh() {
     title.textContent = t('buttons_slot_title', 'Buttons (Slot {slot})', { slot });
+    const keep = Number(copyFrom.value);
+    copyFrom.replaceChildren(...Array.from({ length: RF_SLOT_COUNT }, (_, i) => i + 1).filter(n => n !== slot)
+      .map(n => h('option', { value: String(n), text: t('slot_n', 'Slot {n}', { n }) })));
+    if (keep && keep !== slot) copyFrom.value = String(keep);
     const copyLabel = t('copy_from_slot', 'Copy from Slot {slot}', { slot: otherSlot() });
     copyBtn.textContent = `📋 ${copyLabel}`;
     dirtyBadge.style.display = dirty ? '' : 'none';
@@ -763,7 +780,7 @@ export function createButtonEditor() {
   const element = h('div', { className: 'card' }, [
     h('div', { className: 'card-header' }, [
       title,
-      h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, [dirtyBadge, copyBtn, revertBtn, saveBtn]),
+      h('div', { style: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' } }, [dirtyBadge, copyFrom, copyBtn, revertBtn, saveBtn]),
     ]),
     h('label', { className: 'eb-field eb-ctx' }, [h('span', { text: t('bindings_for', 'Bindings for') }), ctxSelect]),
     h('div', { className: 'eb-layout' }, [
@@ -796,5 +813,20 @@ export function createButtonEditor() {
     });
   });
 
-  return { element, load };
+  // Called with the slot's RF status: a remote without a screen gets no device bindings, and a
+  // device context in use goes back to the activity defaults
+  function setScreenless(value) {
+    if (Boolean(value) === screenless) return;
+    screenless = Boolean(value);
+    ctxSelect.replaceChildren(...ctxOptions());
+    if (![...ctxSelect.querySelectorAll('option')].some(o => o.value === ctx)) {
+      ctx = 'a:-1';
+      screenView = null;
+    }
+    ctxSelect.value = ctx;
+    refresh();
+    showScreen();
+  }
+
+  return { element, load, setScreenless };
 }
