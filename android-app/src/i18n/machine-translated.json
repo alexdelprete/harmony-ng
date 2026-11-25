@@ -728,6 +728,7 @@
     "plg_add_repo_hint",
     "plg_add_repo_short",
     "plg_added",
+    "plg_ir_alt_title",
     "plg_adding",
     "plg_addons_badge",
     "plg_all_cmds_added",
@@ -929,7 +930,11 @@
     "plg_confirm_timeout",
     "hide_in_devices_tab",
     "devices_all_hidden",
-    "slot_n_empty"
+    "slot_n_empty",
+    "press_min_repeats",
+    "press_min_repeats_title",
+    "click_start_capture_hint",
+    "irdb_captured_frames"
   ],
   "fr": [
     "map_action_help",
@@ -1659,6 +1664,7 @@
     "plg_add_repo_hint",
     "plg_add_repo_short",
     "plg_added",
+    "plg_ir_alt_title",
     "plg_adding",
     "plg_addons_badge",
     "plg_all_cmds_added",
@@ -1860,7 +1866,11 @@
     "plg_confirm_timeout",
     "hide_in_devices_tab",
     "devices_all_hidden",
-    "slot_n_empty"
+    "slot_n_empty",
+    "press_min_repeats",
+    "press_min_repeats_title",
+    "click_start_capture_hint",
+    "irdb_captured_frames"
   ],
   "nl": [
     "map_action_help",
@@ -2590,6 +2600,7 @@
     "plg_add_repo_hint",
     "plg_add_repo_short",
     "plg_added",
+    "plg_ir_alt_title",
     "plg_adding",
     "plg_addons_badge",
     "plg_all_cmds_added",
@@ -2791,7 +2802,11 @@
     "plg_confirm_timeout",
     "hide_in_devices_tab",
     "devices_all_hidden",
-    "slot_n_empty"
+    "slot_n_empty",
+    "press_min_repeats",
+    "press_min_repeats_title",
+    "click_start_capture_hint",
+    "irdb_captured_frames"
   ],
   "es": [
     "map_action_help",
@@ -3521,6 +3536,7 @@
     "plg_add_repo_hint",
     "plg_add_repo_short",
     "plg_added",
+    "plg_ir_alt_title",
     "plg_adding",
     "plg_addons_badge",
     "plg_all_cmds_added",
@@ -3722,7 +3738,11 @@
     "plg_confirm_timeout",
     "hide_in_devices_tab",
     "devices_all_hidden",
-    "slot_n_empty"
+    "slot_n_empty",
+    "press_min_repeats",
+    "press_min_repeats_title",
+    "click_start_capture_hint",
+    "irdb_captured_frames"
   ],
   "it": [
     "map_action_help",
@@ -4452,6 +4472,7 @@
     "plg_add_repo_hint",
     "plg_add_repo_short",
     "plg_added",
+    "plg_ir_alt_title",
     "plg_adding",
     "plg_addons_badge",
     "plg_all_cmds_added",
@@ -4653,6 +4674,10 @@
     "plg_confirm_timeout",
     "hide_in_devices_tab",
     "devices_all_hidden",
-    "slot_n_empty"
+    "slot_n_empty",
+    "press_min_repeats",
+    "press_min_repeats_title",
+    "click_start_capture_hint",
+    "irdb_captured_frames"
   ]
 }
